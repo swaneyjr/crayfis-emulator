@@ -1,6 +1,6 @@
 #!/bin/bash
 
-usage() { echo "Usage: $0 -s host [-n njobs] [-d source]"; exit 1; }
+usage() { echo "Usage: $0 -s host [-n njobs] [-d source] [-r rate] [-i interval]"; exit 1; }
 
 on_die()
 {
@@ -12,6 +12,8 @@ trap 'on_die' INT
 
 njob=100
 dsource=htc-cosmic
+rate=0.2
+interval=120
 while getopts "hn:s:" o; do
         case "${o}" in
                 h)
@@ -26,6 +28,12 @@ while getopts "hn:s:" o; do
 		s)
 		host="${OPTARG}"
 		;;
+		r)
+		rate="${OPTARG}"
+		;;
+		i)
+		rate="${OPTARG}"
+		;;
                 *)
                 usage
                 ;;
@@ -39,7 +47,7 @@ echo "Spawning workers..."
 while [ "$i" -lt "$njob" ]; do
 	i=$((i+1))
 
-	./device.py --source $dsource --server $host &
+	./device.py --source $dsource --server $host --rate $rate --interval $interval &
 done
 echo "Done. Press Ctrl+C to kill workers."
 
