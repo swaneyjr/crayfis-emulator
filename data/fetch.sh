@@ -10,8 +10,10 @@ rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/17/414e9759cf63a2
 
 # data from samsung comsic run
 mkdir -p sam-cosmic
+rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/05/9582b9cc2cb95ea0*.bin.gz sam-cosmic
 rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/06/9582b9cc2cb95ea0*.bin.gz sam-cosmic
 
 # data from htc cosmic run
 mkdir -p htc-cosmic
+rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/05/414e9759cf63a2dc*.bin.gz htc-cosmic
 rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/06/414e9759cf63a2dc*.bin.gz htc-cosmic
