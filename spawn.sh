@@ -14,7 +14,7 @@ njob=100
 dsource=htc-cosmic
 rate=0.2
 interval=120
-while getopts "hn:s:" o; do
+while getopts "hn:s:d:r:i:" o; do
         case "${o}" in
                 h)
                 usage
