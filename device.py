@@ -118,9 +118,6 @@ if __name__ == "__main__":
         dc = pb.DataChunk()
         dc.exposure_blocks.extend([xb])
 
-        # okay, we've built the event. now sleep to simulate the interval
-        time.sleep(sleep_time)
-
         conn = httplib.HTTPConnection(args.server)
         headers = make_header(args.hwid, run_id)
         conn.request("POST", "/data.php", dc.SerializeToString(), headers)
@@ -128,3 +125,6 @@ if __name__ == "__main__":
         print "uploading %d events..." % n_events
         print resp.read()
         print
+
+        # okay, we've sent the event. now sleep to simulate the interval
+        time.sleep(sleep_time)
