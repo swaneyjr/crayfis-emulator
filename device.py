@@ -66,6 +66,7 @@ if __name__ == "__main__":
     parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
     parser.add_argument("--nlimit", type=int, help="Limit the number of times to send data")
     parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
+    parser.add_argument("--genfile", help="when set, save request body to file of this name")
     args = parser.parse_args()
 
     if not args.hwid:
@@ -120,9 +121,17 @@ if __name__ == "__main__":
 
         conn = httplib.HTTPConnection(args.server)
         headers = make_header(args.hwid, run_id)
-        conn.request("POST", "/data.php", dc.SerializeToString(), headers)
-        resp = conn.getresponse()
-        print "uploading %d events..." % n_events
+        body = dc.SerializeToString()
+        if args.genfile:
+            f = open(args.genfile, 'w')
+            f.write(body)
+            f.close()
+            print "wrote body to file %s" % args.genfile
+            exit(0)
+        else:
+            conn.request("POST", "/data.php", body, headers)
+            resp = conn.getresponse()
+            print "uploading %d events..." % n_events
         print resp.read()
         print
 
