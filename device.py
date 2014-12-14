@@ -10,6 +10,7 @@ import time
 import uuid
 import httplib
 import random
+import threading
 
 ''' generator to yield source data '''
 def generate_events(source_files):
@@ -55,36 +56,11 @@ def make_header(hw_id, run_id):
     headers['Run-id'] = str(run_id)
     return headers
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="emulate a crayfis device by generating data and sending it to the server")
-    parser.add_argument("--server", required=True, help="the server hostname/address")
-    parser.add_argument("--rate", default=0.2, type=float, help="the nominal event rate in Hz")
-    parser.add_argument("--interval", default=120, type=float, help="the nominal communication interval in seconds")
-    parser.add_argument("--source", required=True, help="the data source to stream from")
-    parser.add_argument("--hwid", help="the device ID. if none is specified, a random one will be generated.")
-    parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
-    parser.add_argument("--nlimit", type=int, help="Limit the number of times to send data")
-    parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
-    parser.add_argument("--genfile", help="when set, save request body to file of this name")
-    args = parser.parse_args()
-
-    if not args.hwid:
-        args.hwid = uuid.uuid1().hex[:16]
+def do_sim(event_stream, event_lock, args, terminate):
+    if args.hwid == None:
+        hwid = uuid.uuid1().hex[:16]
 
     run_id = uuid.uuid1()
-
-    source_path = os.path.join('data',args.source)
-    if not os.path.exists(source_path):
-        print >> sys.stderr, "Unknown source:", args.source
-        sys.exit(1)
-
-    source_files = glob(os.path.join(source_path, '*.bin.gz'))
-    if not source_files:
-        print >> sys.stderr, "Source is empty!"
-        sys.exit(1)
-
-    event_stream = generate_events(source_files)
 
     # before sending the first event, pause for a random fraction
     # of the nominal interval. This helps simulate the fact that
@@ -92,17 +68,19 @@ if __name__ == "__main__":
     if not args.nowait:
         pause_time = np.random.rand() * args.interval
         print "pausing %.1fs before generating events..." % (pause_time)
-        time.sleep(pause_time)
+        terminate.wait(pause_time)
+
+        if terminate.is_set():
+            print "killed before generating events."
+            return
+
         print "event generation begins."
 
     xbn = 1
     tstart = time.time()
     i = 0
-    while True:
+    while not terminate.is_set():
         i += 1
-        if args.tlimit and (time.time() - tstart)/60 > args.tlimit:
-            print "time limit exceeded. quitting."
-            break
         if args.nlimit and i>args.nlimit:
             print "upload limit exceeded. quitting."
             break
@@ -112,7 +90,8 @@ if __name__ == "__main__":
         # make an xb for this period with the expected number of events
         n_events = np.random.poisson(sleep_time * args.rate)
         #print "sending %d events" % n_events
-        xb = make_xb(it.islice(event_stream, n_events), run_id, sleep_time)
+        with evt_lock:
+            xb = make_xb(it.islice(event_stream, n_events), run_id, sleep_time)
         xb.xbn = xbn
         xbn += 1
 
@@ -120,7 +99,7 @@ if __name__ == "__main__":
         dc.exposure_blocks.extend([xb])
 
         conn = httplib.HTTPConnection(args.server)
-        headers = make_header(args.hwid, run_id)
+        headers = make_header(hwid, run_id)
         body = dc.SerializeToString()
         if args.genfile:
             f = open(args.genfile, 'w')
@@ -136,4 +115,59 @@ if __name__ == "__main__":
         print
 
         # okay, we've sent the event. now sleep to simulate the interval
-        time.sleep(sleep_time)
+        terminate.wait(sleep_time)
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="emulate a crayfis device by generating data and sending it to the server")
+    parser.add_argument("--server", required=True, help="the server hostname/address")
+    parser.add_argument("--rate", default=0.2, type=float, help="the nominal event rate in Hz")
+    parser.add_argument("--interval", default=120, type=float, help="the nominal communication interval in seconds")
+    parser.add_argument("--source", required=True, help="the data source to stream from")
+    parser.add_argument("--hwid", help="the device ID. if none is specified, a random one will be generated.")
+    parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
+    parser.add_argument("--nlimit", type=int, help="Limit the number of times to send data")
+    parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
+    parser.add_argument("--genfile", help="when set, save request body to file of this name")
+    parser.add_argument("-N", "--ndev", type=int, default=1, help="number of devices to emulate.")
+    args = parser.parse_args()
+
+    if args.ndev > 1:
+        args.hwid = None
+
+    source_path = os.path.join('data',args.source)
+    if not os.path.exists(source_path):
+        print >> sys.stderr, "Unknown source:", args.source
+        sys.exit(1)
+
+    source_files = glob(os.path.join(source_path, '*.bin.gz'))
+    if not source_files:
+        print >> sys.stderr, "Source is empty!"
+        sys.exit(1)
+
+    event_stream = generate_events(source_files)
+
+    evt_lock = threading.Lock()
+    terminate = threading.Event()
+    threads = []
+    print 'spawning %d threads' % args.ndev
+    for i in xrange(args.ndev):
+        t = threading.Thread(target=do_sim, args=(event_stream, evt_lock, args, terminate))
+        threads.append(t)
+        t.start()
+
+    try:
+        while True:
+            if args.tlimit and (time.time() - tstart)/60 > args.tlimit:
+                print "time limit exceeded. quitting."
+                break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        # user wants to exit.
+        print "shutting down threads"
+        terminate.set()
+
+    print 'joining threads'
+    for t in threads:
+        t.join()
+    print 'done. bye!'
