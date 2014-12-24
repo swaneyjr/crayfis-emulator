@@ -60,6 +60,8 @@ def make_header(hw_id, run_id, app_code):
 def do_sim(event_stream, event_lock, args, terminate):
     if args.hwid == None:
         hwid = uuid.uuid1().hex[:16]
+    else:
+        hwid = args.hwid
 
     run_id = uuid.uuid1()
 
@@ -150,6 +152,8 @@ if __name__ == "__main__":
         alphanums = set(alphanums)
         import random
         args.appcode = ''.join(random.sample(alphanums, 7))
+
+    print "Using appcode:", args.appcode
 
     source_path = os.path.join('data',args.source)
     if not os.path.exists(source_path):
