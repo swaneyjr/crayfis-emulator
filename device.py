@@ -111,8 +111,14 @@ def do_sim(event_stream, event_lock, args, terminate):
         else:
             conn.request("POST", "/data.php", body, headers)
             resp = conn.getresponse()
-            print "uploading %d events..." % n_events
-        print resp.read()
+            if not resp.status in (200, 202):
+                print "got unexpected status code (%d)" % resp.status
+                with open(args.errfile, 'w') as errfile:
+                    print >> errfile, resp.read()
+                    print "wrote error to %s" % args.errfile
+            else:
+                print "uploaded %d events..." % n_events
+                print resp.read()
         print
 
         # okay, we've sent the event. now sleep to simulate the interval
@@ -131,6 +137,7 @@ if __name__ == "__main__":
     parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
     parser.add_argument("--genfile", help="when set, save request body to file of this name")
     parser.add_argument("--appcode", help="The API key to send with requests.")
+    parser.add_argument("--errfile", default="err.html", help="The file to save errors to")
     parser.add_argument("-N", "--ndev", type=int, default=1, help="number of devices to emulate.")
     args = parser.parse_args()
 
