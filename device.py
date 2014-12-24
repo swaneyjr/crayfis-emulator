@@ -47,13 +47,14 @@ def make_xb(events, run_id, interval=120):
     xb.aborted = (np.random.random()>0.995)
     return xb
 
-def make_header(hw_id, run_id):
+def make_header(hw_id, run_id, app_code):
     headers = {}
     headers['Content-type'] = "application/octet-stream"
     headers['Crayfis-version'] = 'emulator v0.1'
     headers['Crayfis-version-code'] = '1'
     headers['Device-id'] = hw_id
     headers['Run-id'] = str(run_id)
+    headers['App-code'] = app_code
     return headers
 
 def do_sim(event_stream, event_lock, args, terminate):
@@ -99,7 +100,7 @@ def do_sim(event_stream, event_lock, args, terminate):
         dc.exposure_blocks.extend([xb])
 
         conn = httplib.HTTPConnection(args.server)
-        headers = make_header(hwid, run_id)
+        headers = make_header(hwid, run_id, args.appcode)
         body = dc.SerializeToString()
         if args.genfile:
             f = open(args.genfile, 'w')
@@ -129,11 +130,19 @@ if __name__ == "__main__":
     parser.add_argument("--nlimit", type=int, help="Limit the number of times to send data")
     parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
     parser.add_argument("--genfile", help="when set, save request body to file of this name")
+    parser.add_argument("--appcode", help="The API key to send with requests.")
     parser.add_argument("-N", "--ndev", type=int, default=1, help="number of devices to emulate.")
     args = parser.parse_args()
 
     if args.ndev > 1:
         args.hwid = None
+
+    if not args.appcode:
+        alphanums = 'abcdefghijklmnopqrstuvwxyz0123456789'
+        alphanums += alphanums.upper()
+        alphanums = set(alphanums)
+        import random
+        args.appcode = ''.join(random.sample(alphanums, 7))
 
     source_path = os.path.join('data',args.source)
     if not os.path.exists(source_path):
