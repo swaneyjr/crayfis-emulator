@@ -12,6 +12,21 @@ import httplib
 import random
 import threading
 
+PLACES = [
+        ((-27.467917, 153.027778), 'Brisbane'),
+        ((46.2, 6.15), 'Geneva'),
+        ((45.5, -73.566667), 'Montreal'),
+        ((-12.043333, -77.028333), 'Lima'),
+        ((6.666667, -1.616667), 'Kumasi'),
+        ((51.166667, 71.433333), 'Astana'),
+        ((55.75, 37.616667), 'Moscow'),
+        ((35.199167, -111.631111), 'Flagstaff'),
+        ((43.616667, -116.2), 'Boise'),
+        ((37.688889, -97.336111), 'Wichita'),
+        ((36.566667, 136.65), 'Kanazawa'),
+        ((61.216667, -149.9), 'Anchorage'),
+        ]
+
 ''' generator to yield source data '''
 def generate_events(source_files):
     while True:
@@ -26,14 +41,14 @@ def generate_events(source_files):
                 yield evt
 
 ''' make a dummy exposure block and fill it with the given events '''
-def make_xb(events, run_id, interval=120):
+def make_xb(events, run_id, interval=120, loc=(0,0)):
     xb = pb.ExposureBlock()
     xb.events.extend(events)
     xb.run_id = run_id.int & 0xFFFFFFFF
     xb.start_time = int(time.time()*1e3)
     xb.end_time = int(time.time()*1e3 + interval)
-    xb.gps_lat = 180*np.random.random()-90
-    xb.gps_lon = 360*np.random.random()-180
+    xb.gps_lat = loc[0]
+    xb.gps_lon = loc[1]
     xb.daq_state = 2
     xb.L1_thresh = 10
     xb.L2_thresh = 9
@@ -62,6 +77,9 @@ def do_sim(event_stream, event_lock, args, terminate):
         hwid = uuid.uuid1().hex[:16]
     else:
         hwid = args.hwid
+
+    loc, placename = random.choice(PLACES)
+    print "Using location:", placename
 
     run_id = uuid.uuid1()
 
@@ -94,7 +112,7 @@ def do_sim(event_stream, event_lock, args, terminate):
         n_events = np.random.poisson(sleep_time * args.rate)
         #print "sending %d events" % n_events
         with evt_lock:
-            xb = make_xb(it.islice(event_stream, n_events), run_id, sleep_time)
+            xb = make_xb(it.islice(event_stream, n_events), run_id, sleep_time, loc)
         xb.xbn = xbn
         xbn += 1
 
