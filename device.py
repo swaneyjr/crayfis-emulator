@@ -46,7 +46,7 @@ def make_xb(events, run_id, interval=120, loc=(0,0)):
     xb.events.extend(events)
     xb.run_id = run_id.int & 0xFFFFFFFF
     xb.start_time = int(time.time()*1e3)
-    xb.end_time = int(time.time()*1e3 + interval)
+    xb.end_time = int(time.time()*1e3 + interval*1e3)
     xb.gps_lat = loc[0]
     xb.gps_lon = loc[1]
     xb.daq_state = 2
