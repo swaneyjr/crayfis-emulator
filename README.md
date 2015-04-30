@@ -1,7 +1,6 @@
 crayfis-emulator
 ================
 The emulator plays back real data from a few different phone runs, with configurable rates.
-It should probably be rewritten with python's `multiprocessing` package; at the moment you have to spin up many instances which is expensive on RAM.
 
 installation
 ------------
@@ -15,4 +14,9 @@ You will need permissions on the crayfis.ps.uci.edu server (pubkey); contact an 
 use
 ---
 see `./device.py --help`.
-There is also a helper script `spawn.sh` to run a bunch of device instances in the background
+
+errors
+---
+Sometimes you will want to debug errors that occur on the server side during data submission.
+In the event of a non-2XX response code, the HTTP response will be dumped to `err.html`.
+This works best if you set `DEBUG=True` in the django `settings.py` file.
