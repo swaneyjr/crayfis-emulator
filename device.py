@@ -150,7 +150,7 @@ if __name__ == "__main__":
     parser.add_argument("--server", required=True, help="the server hostname/address")
     parser.add_argument("--rate", default=0.2, type=float, help="the nominal event rate in Hz")
     parser.add_argument("--interval", default=120, type=float, help="the nominal communication interval in seconds")
-    parser.add_argument("--source", required=True, help="the data source to stream from")
+    parser.add_argument("--source", default="htc-cosmic", help="the data source to stream from")
     parser.add_argument("--hwid", help="the device ID. if none is specified, a random one will be generated.")
     parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
     parser.add_argument("--nlimit", type=int, help="Limit the number of times to send data")
