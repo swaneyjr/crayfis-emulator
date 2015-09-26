@@ -22,6 +22,22 @@ When simulating a single device, you can also use the `--nowait` command to comm
 By default each simulated device waits a random amount of time before sending, to prevent all devices from
 trying to send data at the same time.
 
+Docker usage
+---
+The docker container basically runs `sleep $SLEEP_TIME && ./device.py --server $SERVER -N $NUM_DEVICES --interval $INTERVAL`.
+The default values are:  
+```
+SLEEP_TIME=30
+SERVER=crayfis-site
+NUM_DEVICES=10
+INTERVAL=30
+```
+
+To set these to another value, simply pass the desired environment variables to the docker run command, e.g.:
+```
+docker run -e SERVER=127.0.0.1 crayfis-emulator
+```
+
 errors
 ---
 Sometimes you will want to debug errors that occur on the server side during data submission.
