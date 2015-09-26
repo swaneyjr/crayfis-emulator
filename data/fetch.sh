@@ -7,6 +7,8 @@ rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.10/14/9582b9cc2cb95e
 # data from htc Rad226 run
 mkdir -p htc-rad226
 rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/17/414e9759cf63a2dc*.bin.gz htc-rad226
+rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/18/414e9759cf63a2dc*.bin.gz htc-rad226
+rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/19/414e9759cf63a2dc*.bin.gz htc-rad226
 
 # data from samsung comsic run
 mkdir -p sam-cosmic
@@ -17,3 +19,5 @@ rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/06/9582b9cc2cb95e
 mkdir -p htc-cosmic
 rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/05/414e9759cf63a2dc*.bin.gz htc-cosmic
 rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/06/414e9759cf63a2dc*.bin.gz htc-cosmic
+rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/07/414e9759cf63a2dc*.bin.gz htc-cosmic
+rsync -avzP $username@crayfis.ps.uci.edu:/data/raw/bin/2014.08/08/414e9759cf63a2dc*.bin.gz htc-cosmic
