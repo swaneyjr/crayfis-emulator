@@ -21,4 +21,4 @@ ENV SERVER=crayfis-site
 ENV NUM_DEVICES=10
 ENV INTERVAL=30
 
-CMD sleep $SLEEP_TIME && ./device.py --server $REMOTE_SERVER -N $NUM_DEVICES --interval $INTERVAL
+CMD sleep $SLEEP_TIME && ./device.py --server $SERVER -N $NUM_DEVICES --interval $INTERVAL
