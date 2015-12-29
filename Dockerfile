@@ -20,5 +20,6 @@ ENV SLEEP_TIME=30
 ENV SERVER=crayfis-site
 ENV NUM_DEVICES=10
 ENV INTERVAL=30
+ENV APPCODE=""
 
-CMD sleep $SLEEP_TIME && ./device.py --server $SERVER -N $NUM_DEVICES --interval $INTERVAL
+CMD sleep $SLEEP_TIME && ./device.py --server $SERVER -N $NUM_DEVICES --interval $INTERVAL --appcode "$APPCODE"
