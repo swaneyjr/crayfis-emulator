@@ -140,6 +140,8 @@ def do_sim(event_stream, event_lock, args, terminate):
                 print "uploaded %d events..." % n_events
                 print resp.read()
         print
+        # flush output
+        sys.stdout.flush()
 
         # okay, we've sent the event. now sleep to simulate the interval
         terminate.wait(sleep_time)

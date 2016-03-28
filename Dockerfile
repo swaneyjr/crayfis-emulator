@@ -1,12 +1,9 @@
 FROM dev.crayfis.io/crayfis-base
 
+RUN apt-get update && apt-get install -y rsync
+
 ADD ./*.py /crayfis-emulator/
 ADD ./data/fetch.sh /crayfis-emulator/data/fetch.sh
-
-# add a key to access the data from crayfis.ps.uci.edu
-# (needed by the fetch.sh script)
-ADD id_rsa /root/.ssh/id_rsa
-ADD id_rsa.pub /root/.ssh/id_rsa.pub
 
 # also make sure we trust the server key
 RUN ssh-keyscan crayfis.ps.uci.edu >> /root/.ssh/known_hosts
