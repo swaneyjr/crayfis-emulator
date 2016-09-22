@@ -13,6 +13,7 @@ import random
 import threading
 
 PLACES = [
+        ((0, 0), 'Null Island'),
         ((-27.467917, 153.027778), 'Brisbane'),
         ((46.2, 6.15), 'Geneva'),
         ((45.5, -73.566667), 'Montreal'),
