@@ -51,6 +51,8 @@ def make_xb(events, run_id, interval=120, loc=(0,0)):
     xb.gps_lat = loc[0]
     xb.gps_lon = loc[1]
     xb.daq_state = 2
+    xb.res_x = 1920
+    xb.res_y = 1080
     xb.L1_thresh = 10
     xb.L2_thresh = 9
     xb.L1_processed = int(20*interval) # ~ fps * seconds
