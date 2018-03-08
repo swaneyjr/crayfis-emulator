@@ -13,6 +13,10 @@ RUN ./fetch.sh
 
 WORKDIR /crayfis-emulator
 
+# move to the working directory and install requirements
+ADD requirements.txt /crayfis-emulator/requirements.txt
+RUN pip install -r /crayfis-emulator/requirements.txt
+
 ENV SLEEP_TIME=30
 ENV SERVER=crayfis-site
 ENV NUM_DEVICES=10

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import sys, os
-import crayfis_data_pb2 as pb
+import crayon.crayfis_data_pb2 as pb
 from glob import glob
 import gzip
 import numpy as np
