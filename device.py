@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import sys, os
 import crayon.crayfis_data_pb2 as pb
@@ -8,7 +8,7 @@ import numpy as np
 import itertools as it
 import time
 import uuid
-import httplib
+import http.client
 import random
 import threading
 
@@ -82,7 +82,7 @@ def do_sim(event_stream, event_lock, args, terminate):
         hwid = args.hwid
 
     loc, placename = random.choice(PLACES)
-    print "Using location:", placename
+    print("Using location:", placename)
 
     run_id = uuid.uuid1()
 
@@ -91,14 +91,14 @@ def do_sim(event_stream, event_lock, args, terminate):
     # phones will start running at random times.
     if not args.nowait:
         pause_time = np.random.rand() * args.interval
-        print "pausing %.1fs before generating events..." % (pause_time)
+        print("pausing {0:.1f}s before generating events...".format(pause_time))
         terminate.wait(pause_time)
 
         if terminate.is_set():
-            print "killed before generating events."
+            print("killed before generating events.")
             return
 
-        print "event generation begins."
+        print("event generation begins.")
 
     xbn = 1
     tstart = time.time()
@@ -106,7 +106,7 @@ def do_sim(event_stream, event_lock, args, terminate):
     while not terminate.is_set():
         i += 1
         if args.nlimit and i>args.nlimit:
-            print "upload limit exceeded. quitting."
+            print("upload limit exceeded. quitting.")
             break
         # sleep for the specified period (give or take 5%)
         sleep_time = args.interval * np.random.normal(1,0.05)
@@ -122,27 +122,27 @@ def do_sim(event_stream, event_lock, args, terminate):
         dc = pb.DataChunk()
         dc.exposure_blocks.extend([xb])
 
-        conn = httplib.HTTPConnection(args.server)
+        conn = http.client.HTTPConnection(args.server)
         headers = make_header(hwid, run_id, args.appcode)
         body = dc.SerializeToString()
         if args.genfile:
             f = open(args.genfile, 'w')
             f.write(body)
             f.close()
-            print "wrote body to file %s" % args.genfile
+            print("wrote body to file", args.genfile)
             exit(0)
         else:
-            conn.request("POST", "/data.php", body, headers)
+            conn.request("POST", "/submit", body, headers)
             resp = conn.getresponse()
             if not resp.status in (200, 202):
-                print "got unexpected status code (%d)" % resp.status
+                print("got unexpected status code ({0})".format(resp.status))
                 with open(args.errfile, 'w') as errfile:
-                    print >> errfile, resp.read()
-                    print "wrote error to %s" % args.errfile
+                    print(resp.read(), file=errfile)
+                    print("wrote error to",  args.errfile)
             else:
-                print "uploaded %d events..." % n_events
-                print resp.read()
-        print
+                print("uploaded {} events...".format(n_events))
+                print(resp.read())
+        print()
         # flush output
         sys.stdout.flush()
 
@@ -176,16 +176,16 @@ if __name__ == "__main__":
         import random
         args.appcode = ''.join(random.sample(alphanums, 7))
 
-    print "Using appcode:", args.appcode
+    print("Using appcode:", args.appcode)
 
     source_path = os.path.join('data',args.source)
     if not os.path.exists(source_path):
-        print >> sys.stderr, "Unknown source:", args.source
+        print("Unknown source:", args.source, file=sys.stderr)
         sys.exit(1)
 
     source_files = glob(os.path.join(source_path, '*.bin.gz'))
     if not source_files:
-        print >> sys.stderr, "Source is empty!"
+        print("Source is empty!", file=sys.stderr)
         sys.exit(1)
 
     event_stream = generate_events(source_files)
@@ -193,8 +193,8 @@ if __name__ == "__main__":
     evt_lock = threading.Lock()
     terminate = threading.Event()
     threads = []
-    print 'spawning %d threads' % args.ndev
-    for i in xrange(args.ndev):
+    print('spawning {} threads'.format(args.ndev))
+    for i in range(args.ndev):
         t = threading.Thread(target=do_sim, args=(event_stream, evt_lock, args, terminate))
         threads.append(t)
         t.start()
@@ -202,15 +202,15 @@ if __name__ == "__main__":
     try:
         while True:
             if args.tlimit and (time.time() - tstart)/60 > args.tlimit:
-                print "time limit exceeded. quitting."
+                print("time limit exceeded. quitting.")
                 break
             time.sleep(1)
     except KeyboardInterrupt:
         # user wants to exit.
-        print "shutting down threads"
+        print("shutting down threads")
         terminate.set()
 
-    print 'joining threads'
+    print('joining threads')
     for t in threads:
         t.join()
-    print 'done. bye!'
+    print('done. bye!')
