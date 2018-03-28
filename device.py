@@ -172,7 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--server", required=True, help="the server hostname/address")
     parser.add_argument("--rate", default=0.2, type=float, help="the nominal event rate in Hz")
     parser.add_argument("--interval", default=120, type=float, help="the nominal communication interval in seconds")
-    parser.add_argument("--source", default="htc-cosmic", help="the data source to stream from")
+    parser.add_argument("--source", help="the data source to stream from")
     parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
     parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
     parser.add_argument("--genfile", help="when set, save request body to file of this name")
@@ -181,21 +181,32 @@ if __name__ == "__main__":
     parser.add_argument("-N", "--ndev", type=int, default=1, help="number of devices to emulate.")
     args = parser.parse_args()
 
-    source_path = os.path.join('data',args.source)
-    if not os.path.exists(source_path):
-        print("Unknown source:", args.source, file=sys.stderr)
-        sys.exit(1)
+    if args.source:
+        source_path = os.path.join('data', args.source)
+        if not os.path.exists(source_path):
+            print("Unknown source:", args.source, file=sys.stderr)
+            sys.exit(1)
 
-    source_files = glob(os.path.join(source_path, '*.bin.gz'))
-    if not source_files:
-        print("Source is empty!", file=sys.stderr)
-        sys.exit(1)
-
-    devices = []
+        source_files = glob(os.path.join(source_path, '*.bin.gz'))
+        if not source_files:
+            print("Source is empty!", file=sys.stderr)
+            sys.exit(1)
 
     print('spawning {} devices'.format(args.ndev))
+
+    devices = []
     tstart = time.time()
+
     for i in range(args.ndev):
+        
+        # pick a random file if the source was never specified
+        if not args.source:
+            data_dirs = os.listdir('data')
+            data_dirs.remove('fetch.sh')
+            source_path = os.path.join('data', random.choice(data_dirs))
+            source_files = glob(os.path.join(source_path, '*.bin.gz'))
+            print('Using files from {0}'.format(source_path))
+
         dev = Device(source_files, args.server, appcode=args.appcode, xb_period=args.interval, rate=args.rate, gen=args.genfile, err=args.errfile)
         devices.append(dev)
         dev.start()
