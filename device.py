@@ -7,6 +7,7 @@ import gzip
 import numpy as np
 import itertools as it
 import time
+import json
 import uuid
 import http.client
 import random
@@ -32,6 +33,14 @@ PLACES = [
 
 
 class Device(threading.Thread):
+
+    RESOLUTIONS = [
+            (320, 240),
+            (640, 480), 
+            (1280, 720), 
+            (1920, 1080),
+            ]
+
     def __init__(self, source_files, server, appcode=None, loc=None, rate=0.2, xb_period=120, fps=30, res=(1920, 1080), gen=None, err=None):
         super().__init__()
 
@@ -55,8 +64,22 @@ class Device(threading.Thread):
         self._rate = rate
         self._xb_period = xb_period
         self._fps = fps
-        self._res = res
-        self._temp = 250
+
+        # randomly determine which higher resolutions are available
+        rand = random.random()
+        if rand < 0.5:
+            # QHD
+            self.RESOLUTIONS.append((2560, 1440))
+        if rand < 0.25:
+            # UHD
+            self.RESOLUTIONS.append((3840, 2160))
+
+        self._set_res(res)
+        
+        self._room_temp = np.random.normal(loc=230, scale=20)
+        self._temp = self._room_temp
+        self._plateau_temp_1080p = np.random.normal(loc=350, scale=20) - 230
+        self._plateau_temp_pow = np.random.lognormal()
 
         self._genfile = gen
         self._errfile = err
@@ -88,8 +111,8 @@ class Device(threading.Thread):
         xb.daq_state = 2
         xb.res_x = self._res[0]
         xb.res_y = self._res[1]
-        xb.battery_temp = self._temp
-        xb.battery_end_temp = self._change_temp()
+        xb.battery_temp = int(self._temp)
+        xb.battery_end_temp = int(self._change_temp())
         xb.L1_thresh = 10
         xb.L2_thresh = 9
         xb.L1_processed = int(self._fps * interval)
@@ -112,7 +135,28 @@ class Device(threading.Thread):
         return headers
 
     def _change_temp(self):
+        # assume plateau temp has a power law relationship with res*fps
+        pix_rate = self._fps * self._res[0] * self._res[1]
+        pix_rate_std = 1920*1080*30
+        plateau_temp = self._room_temp + self._plateau_temp_1080p * (pix_rate/pix_rate_std)**self._plateau_temp_pow
+        
+        # use exponential model for dT/dt with Gaussian fluctuations
+        self._temp += (plateau_temp - self._temp)/5 + np.random.normal(scale=5)
+        print("Temperature changed to {}".format(self._temp))
         return self._temp
+
+    def _apply_commands(self, resp):
+        if 'set_xb_period' in resp:
+            self._xb_period = resp['set_xb_period']
+        if 'set_target_resolution' in resp:
+            target_res = tuple(map(int, resp['set_target_resolution'].split('x')))
+            self._set_res(target_res)
+        if 'set_target_fps' in resp:
+            self._fps = resp['set_target_fps']
+
+    def _set_res(self, request):
+        request_area = request[0] * request[1]
+        self._res = sorted(self.RESOLUTIONS, key=(lambda res: abs(res[0]*res[1] - request_area)))[0]
 
     def run(self):
 
@@ -126,7 +170,6 @@ class Device(threading.Thread):
 
             # make an xb for this period with the expected number of events
             n_events = np.random.poisson(sleep_time * self._rate)
-            #print "sending %d events" % n_events
             with EVT_LOCK:
                 xb = self._make_xb(it.islice(self._event_stream, n_events), run_id, sleep_time)
             xb.xbn = xbn
@@ -154,7 +197,9 @@ class Device(threading.Thread):
                         print("wrote error to",  self._errfile)
                 else:
                     print("uploaded {} events...".format(n_events))
-                    print(resp.read())
+                    resp_body = json.loads(resp.read())
+                    self._apply_commands(resp_body)
+                    print(resp_body)
             print()
             # flush output
             sys.stdout.flush()
