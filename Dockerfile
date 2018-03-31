@@ -23,10 +23,10 @@ WORKDIR /crayfis-emulator
 ADD requirements.txt /crayfis-emulator/requirements.txt
 RUN pip3 install -r /crayfis-emulator/requirements.txt
 
-ENV SLEEP_TIME=30
+ENV SLEEP_TIME=10
 ENV SERVER=crayfis-site
 ENV NUM_DEVICES=10
-ENV INTERVAL=30
+ENV INTERVAL=120
 ENV APPCODE=""
 
 WORKDIR /crayfis-emulator

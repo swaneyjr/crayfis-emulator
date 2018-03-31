@@ -5,6 +5,7 @@ import crayon.crayfis_data_pb2 as pb
 from glob import glob
 import gzip
 import numpy as np
+import scipy.stats
 import itertools as it
 import time
 import json
@@ -41,10 +42,14 @@ class Device(threading.Thread):
             (1920, 1080),
             ]
 
-    def __init__(self, source_files, server, appcode=None, loc=None, rate=0.2, xb_period=120, fps=30, res=(1920, 1080), gen=None, err=None):
+    def __init__(self, server, source_files=None, appcode=None, loc=None, rate=0.5, xb_period=120, fps=30, res=(1920, 1080), gen=None, err=None):
         super().__init__()
 
-        self._event_stream = self._generate_events(source_files)
+        if source_files:
+            self._event_stream = self._generate_from_source(source_files)
+        else:
+            self._event_stream = self._simulate_events()
+
         self._server = server
 
         self._hwid = uuid.uuid1().hex[:16]
@@ -61,7 +66,7 @@ class Device(threading.Thread):
             self._loc, placename = random.choice(PLACES)
             print('Using location:{0}'.format(placename))
 
-        self._rate = rate
+        self._target_rate = rate
         self._xb_period = xb_period
         self._fps = fps
 
@@ -86,8 +91,14 @@ class Device(threading.Thread):
 
         self._terminate = threading.Event()
 
+        # run once to configure variables
+        next(self._event_stream)
+
+
     ''' generator to yield source data '''
-    def _generate_events(self, source_files):
+    def _generate_from_source(self, source_files):
+        self._rate = self._target_rate
+        self._l1thresh = 10
         while True:
             # pick a random input file and start streaming it
             f = random.choice(source_files)
@@ -98,6 +109,107 @@ class Device(threading.Thread):
                 #print "actual xb has interval %d" % ((xb.end_time - xb.start_time)/1e3)
                 for evt in xb.events:
                     yield evt
+
+    def _simulate_events(self):
+        
+        # test distributions
+        LENS_SHADE_MAPS = [
+                lambda x,y: 1,
+                lambda x,y: 1 + np.exp(-3*((x-3)**2 + (y+2)**2)), # bad spot
+                lambda x,y: 1 + (x**2 + y**2)/250, # radial distr
+                lambda x,y: 1 + np.exp(x/10)/5, # x only
+                lambda x,y: np.cosh(((x-1)**2 + y**2)**0.5 / 12), # off-radial
+                ]
+
+        # tail in actual data seems to fall off roughly exponentially
+        PIXVAL_CDF = lambda val: scipy.stats.expon.cdf(val, scale=self._pixval_mean)
+
+        if not hasattr(self, '_lens_shade_map'):
+            self._lens_shade_map = random.choice(LENS_SHADE_MAPS)
+        if not hasattr(self, '_weights'):
+            self._weights = np.ones(self._res)
+        if not hasattr(self, '_pixval_mean'):
+            self._pixval_mean = np.random.lognormal(mean=-0.5, sigma=0.5)
+
+        # aspect ratio of 16:9
+        xvals = np.linspace(-8, 8, self._res[0]) 
+        yvals = np.linspace(-4.5, 4.5, self._res[1])
+            
+        # turn the map function into a numpy array with meshgrid
+        xx, yy = np.meshgrid(xvals, yvals, sparse=True)
+        lens_shade_grid = (self._lens_shade_map(xx, yy) * np.ones((self._res[1], self._res[0]))).T
+
+
+        # now find threshold based on lens-shading map
+        self._l1thresh = 0
+        prob_pass = 1
+        target_prob_pass = self._target_rate / self._fps
+
+        while prob_pass > target_prob_pass:
+            self._l1thresh += 1
+
+            # The effective spatial threshold due to weighting.
+            #
+            # N.B. the +1 is because values need to be strictly 
+            # greater than the L1 thresh to pass but we want this
+            # as a cdf
+            weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights) + 1 
+                
+            # Now undo the effects of weighting
+            thresh_before_shading = weighted_thresh / lens_shade_grid
+
+            # Get grid of probabilities each pixel will be below threshold
+            # for any given frame
+            prob_below_thresh = PIXVAL_CDF(thresh_before_shading)
+
+            prob_pass = 1 - np.product(prob_below_thresh)
+            print('L1 = {0}, pass rate = {1}'.format(self._l1thresh, prob_pass))
+
+        self._rate = prob_pass * self._fps
+
+        # now use relative pass probabilites to make a spatial cdf to sample
+        prob_above_thresh = 1 - prob_below_thresh
+        spatial_pdf = prob_above_thresh / np.sum(prob_above_thresh)
+        spatial_cdf = spatial_pdf.cumsum()
+
+        # finally, construct events
+        evt = pb.Event()
+        evt.gps_lat = self._loc[0]
+        evt.gps_lon = self._loc[1]
+
+        while True:
+            del evt.pixels[:]
+            evt.timestamp = int(1000*time.time())
+            pixels = []
+            pix_coords = []
+
+            # assume pixels are independent and pass rate is
+            # the same for remainder of frame w/o replacement
+            while not pixels: #or random.random() < prob_pass:
+                pix = pb.Pixel()
+                coord = (spatial_cdf > random.random()).argmax()
+                
+                # make sure no repeats
+                if coord in pix_coords: continue
+                pix_coords.append(coord)
+                
+                pix.x = coord % self._res[0]
+                pix.y = coord // self._res[0]
+
+                lens_shade_coeff = lens_shade_grid[pix.x, pix.y]
+                val_cdf = 1 - np.exp(-self._pixval_mean * lens_shade_coeff * np.arange(256))
+
+                pix.val = (val_cdf > random.uniform(val_cdf[self._l1thresh], 1)).argmax()
+                pix.adjusted_val = int(self._weights[pix.x, pix.y] * pix.val)
+
+                pixels.append(pix)
+                
+            print("pixel generated at ({0},{1}) with value {2}".format(pix.x, pix.y, pix.val))
+                
+            evt.pixels.extend(pixels) 
+
+            yield evt
+
 
     ''' make a dummy exposure block and fill it with the given events '''
     def _make_xb(self, events, run_id, interval=120):
@@ -113,8 +225,8 @@ class Device(threading.Thread):
         xb.res_y = self._res[1]
         xb.battery_temp = int(self._temp)
         xb.battery_end_temp = int(self._change_temp())
-        xb.L1_thresh = 10
-        xb.L2_thresh = 9
+        xb.L1_thresh = self._l1thresh
+        xb.L2_thresh = self._l1thresh - 1
         xb.L1_processed = int(self._fps * interval)
         xb.L2_processed = len(xb.events)
         xb.L1_pass = xb.L2_processed
@@ -215,9 +327,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="emulate a crayfis device by generating data and sending it to the server")
     parser.add_argument("--server", required=True, help="the server hostname/address")
-    parser.add_argument("--rate", default=0.2, type=float, help="the nominal event rate in Hz")
+    parser.add_argument("--rate", default=0.5, type=float, help="the nominal event rate in Hz")
     parser.add_argument("--interval", default=120, type=float, help="the nominal communication interval in seconds")
-    parser.add_argument("--source", help="the data source to stream from")
+    parser.add_argument("--source", action='store_true', help="Stream events from live data")
     parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
     parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
     parser.add_argument("--genfile", help="when set, save request body to file of this name")
@@ -225,17 +337,6 @@ if __name__ == "__main__":
     parser.add_argument("--errfile", default="err.html", help="The file to save errors to")
     parser.add_argument("-N", "--ndev", type=int, default=1, help="number of devices to emulate.")
     args = parser.parse_args()
-
-    if args.source:
-        source_path = os.path.join('data', args.source)
-        if not os.path.exists(source_path):
-            print("Unknown source:", args.source, file=sys.stderr)
-            sys.exit(1)
-
-        source_files = glob(os.path.join(source_path, '*.bin.gz'))
-        if not source_files:
-            print("Source is empty!", file=sys.stderr)
-            sys.exit(1)
 
     print('spawning {} devices'.format(args.ndev))
 
@@ -245,14 +346,15 @@ if __name__ == "__main__":
     for i in range(args.ndev):
         
         # pick a random file if the source was never specified
-        if not args.source:
+        source_files=None
+        if args.source:
             data_dirs = os.listdir('data')
             data_dirs.remove('fetch.sh')
             source_path = os.path.join('data', random.choice(data_dirs))
             source_files = glob(os.path.join(source_path, '*.bin.gz'))
             print('Using files from {0}'.format(source_path))
 
-        dev = Device(source_files, args.server, appcode=args.appcode, xb_period=args.interval, rate=args.rate, gen=args.genfile, err=args.errfile)
+        dev = Device(args.server, source_files=source_files, appcode=args.appcode, xb_period=args.interval, rate=args.rate, gen=args.genfile, err=args.errfile)
         devices.append(dev)
         dev.start()
         if not args.nowait:
