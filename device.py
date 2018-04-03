@@ -112,6 +112,8 @@ class Device(threading.Thread):
 
     def _simulate_events(self):
         
+        GAIN = 1/20 # ~5 e-/ADC x 4 ADC/pix_val
+
         # test distributions
         LENS_SHADE_MAPS = [
                 lambda x,y: 1,
@@ -121,15 +123,29 @@ class Device(threading.Thread):
                 lambda x,y: np.cosh(((x-1)**2 + y**2)**0.5 / 12), # off-radial
                 ]
 
+        reverse_res = (self._res[1], self._res[0])
+
         # tail in actual data seems to fall off roughly exponentially
-        PIXVAL_CDF = lambda val: scipy.stats.expon.cdf(val, scale=self._pixval_mean)
+        def electron_cdf(val):
+            return scipy.stats.expon.cdf(val, scale=self._electron_mean)
 
         if not hasattr(self, '_lens_shade_map'):
             self._lens_shade_map = random.choice(LENS_SHADE_MAPS)
         if not hasattr(self, '_weights'):
-            self._weights = np.ones(self._res)
-        if not hasattr(self, '_pixval_mean'):
-            self._pixval_mean = np.random.lognormal(mean=-0.5, sigma=0.5)
+            self._weights = np.ones(reverse_res)
+        if not hasattr(self, '_electron_mean'):
+            self._electron_mean = np.random.lognormal(mean=2.5, sigma=0.3)
+        if not hasattr(self, '_hotcells'):
+            n_hotcells = np.random.poisson(lam=10)
+            if n_hotcells:
+                x = np.random.uniform(low=-8, high=8, size=n_hotcells)
+                y = np.random.uniform(low=-4.5, high=4.5, size=n_hotcells)
+                e = np.random.poisson(lam=20*self._electron_mean, size=n_hotcells)
+                freq = np.random.exponential(scale=0.003, size=n_hotcells)
+                self._hotcells = (x, y, e, freq)
+            else:
+                self._hotcells = []
+
 
         # aspect ratio of 16:9
         xvals = np.linspace(-8, 8, self._res[0]) 
@@ -137,8 +153,16 @@ class Device(threading.Thread):
             
         # turn the map function into a numpy array with meshgrid
         xx, yy = np.meshgrid(xvals, yvals, sparse=True)
-        lens_shade_grid = (self._lens_shade_map(xx, yy) * np.ones((self._res[1], self._res[0]))).T
+        gain_map = GAIN * (self._lens_shade_map(xx, yy)*np.ones(reverse_res))
 
+        # find corresponding hotcell coordinates
+        x_unscaled, y_unscaled, electrons, freq = self._hotcells
+        x = ((x_unscaled/16 + 0.5)*self._res[0]).astype(int)
+        y = ((y_unscaled/9 + 0.5)*self._res[1]).astype(int)
+        print("Hotcells at: ", list(zip(x, y, electrons, freq)))
+
+        hot_electrons = scipy.sparse.csr_matrix((electrons, (y, x)), shape=reverse_res) 
+        hot_freq = scipy.sparse.csr_matrix((freq, (y, x)), shape=reverse_res)
 
         # now find threshold based on lens-shading map
         self._l1thresh = 0
@@ -153,14 +177,22 @@ class Device(threading.Thread):
             # N.B. the +1 is because values need to be strictly 
             # greater than the L1 thresh to pass but we want this
             # as a cdf
-            weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights) + 1 
+            weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights).astype(int) + 1
                 
-            # Now undo the effects of weighting
-            thresh_before_shading = weighted_thresh / lens_shade_grid
+            # Now convert thresholds to e- counts
+            electron_thresh = (weighted_thresh / gain_map).astype(int)
 
             # Get grid of probabilities each pixel will be below threshold
-            # for any given frame
-            prob_below_thresh = PIXVAL_CDF(thresh_before_shading)
+            # for any given frame, replacing by hotcell probability where
+            # applicable
+            prob_below_thresh = electron_cdf(electron_thresh)
+                
+            if self._hotcells:
+                #FIXME: this probably could be more efficient
+                hot_e_array = hot_electrons.toarray()
+                hot_freq_array = hot_freq.toarray()
+                hotcell_cdf = np.where(electron_thresh < hot_e_array, 1-hot_freq_array, 1)
+                prob_below_thresh = np.where(hot_e_array > 0, hotcell_cdf, prob_below_thresh)
 
             prob_pass = 1 - np.product(prob_below_thresh)
             print('L1 = {0}, pass rate = {1}'.format(self._l1thresh, prob_pass))
@@ -185,7 +217,7 @@ class Device(threading.Thread):
 
             # assume pixels are independent and pass rate is
             # the same for remainder of frame w/o replacement
-            while not pixels: #or random.random() < prob_pass:
+            while not pixels or random.random() < prob_pass:
                 pix = pb.Pixel()
                 coord = (spatial_cdf > random.random()).argmax()
                 
@@ -196,15 +228,19 @@ class Device(threading.Thread):
                 pix.x = coord % self._res[0]
                 pix.y = coord // self._res[0]
 
-                lens_shade_coeff = lens_shade_grid[pix.x, pix.y]
-                val_cdf = 1 - np.exp(-self._pixval_mean * lens_shade_coeff * np.arange(256))
+                if hot_freq[pix.y, pix.x]:
+                    n_electrons = hot_electrons[pix.y, pix.x]
+                else:
+                    cdf_array = electron_cdf(np.arange(256/GAIN))   
+                    # get val from cdf above the L1 threshold
+                    n_electrons = (cdf_array > random.uniform(cdf_array[electron_thresh[pix.y, pix.x]], 1)).argmax()
 
-                pix.val = (val_cdf > random.uniform(val_cdf[self._l1thresh], 1)).argmax()
-                pix.adjusted_val = int(self._weights[pix.x, pix.y] * pix.val)
+                pix.val = int(n_electrons * gain_map[pix.y, pix.x])
+                pix.adjusted_val = int(self._weights[pix.y, pix.x] * pix.val)
 
                 pixels.append(pix)
                 
-            print("pixel generated at ({0},{1}) with value {2}".format(pix.x, pix.y, pix.val))
+            #print("pixel generated at ({0},{1}) with value {2}".format(pix.x, pix.y, pix.val))
                 
             evt.pixels.extend(pixels) 
 
