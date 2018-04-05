@@ -190,10 +190,13 @@ class Device(threading.Thread):
 
                 # now find threshold based on lens-shading map
                 self._dev._l1thresh = 0
-                prob_pass = 1
+                prob_below_thresh_l1 = np.zeros(reverse_res)
+                electron_thresh_l1 = np.zeros(reverse_res)
+                prob_pass_l1 = 1
                 target_prob_pass = self._dev._target_rate / self._fps
 
-                while prob_pass > target_prob_pass:
+                while prob_pass_l1 > target_prob_pass:
+                    prob_pass_l2 = prob_pass_l1
                     self._dev._l1thresh += 1
 
                     # The effective spatial threshold due to weighting.
@@ -204,29 +207,37 @@ class Device(threading.Thread):
                     weighted_thresh = np.floor((self._dev._l1thresh+0.5)/self._weights).astype(int) + 1
                 
                     # Now convert thresholds to e- counts
-                    electron_thresh = (weighted_thresh / gain_map).astype(int)
+                    electron_thresh_l2 = electron_thresh_l1
+                    electron_thresh_l1 = (weighted_thresh / gain_map).astype(int)
 
                     # Get grid of probabilities each pixel will be below threshold
                     # for any given frame, replacing by hotcell probability where
                     # applicable
-                    prob_below_thresh = electron_cdf(electron_thresh)
+                    prob_below_thresh_l2 = prob_below_thresh_l1
+                    prob_below_thresh_l1 = electron_cdf(electron_thresh_l1)
                 
                     if self._hotcells:
                         #FIXME: this probably could be more efficient
                         hot_e_array = hot_electrons.toarray()
                         hot_freq_array = hot_freq.toarray()
-                        hotcell_cdf = np.where(electron_thresh < hot_e_array, 1-hot_freq_array, 1)
-                        prob_below_thresh = np.where(hot_e_array > 0, hotcell_cdf, prob_below_thresh)
+                        hotcell_cdf_l1 = np.where(electron_thresh_l1 < hot_e_array, 1-hot_freq_array, 1)
+                        hotcell_cdf_l2 = np.where(electron_thresh_l2 < hot_e_array, 1-hot_freq_array, 1)
+                        prob_below_thresh_l1 = np.where(hot_e_array > 0, hotcell_cdf_l1, prob_below_thresh_l1)
+                        prob_below_thresh_l2 = np.where(hot_e_array > 0, hotcell_cdf_l2, prob_below_thresh_l2)
 
-                    prob_pass = 1 - np.product(prob_below_thresh)
-                    print('L1 = {0}, pass rate = {1}'.format(self._dev._l1thresh, prob_pass))
+                    prob_pass_l2 = prob_pass_l1
+                    prob_pass_l1 = 1 - np.product(prob_below_thresh_l1)
+                    print('L1 = {0}, pass rate = {1}'.format(self._dev._l1thresh, prob_pass_l1))
 
-                self._rate = prob_pass * self._fps
+                self._rate = prob_pass_l1 * self._fps
 
                 # now use relative pass probabilites to make a spatial cdf to sample
-                prob_above_thresh = 1 - prob_below_thresh
-                spatial_pdf = prob_above_thresh / np.sum(prob_above_thresh)
-                spatial_cdf = spatial_pdf.cumsum()
+                prob_above_thresh_l1 = 1 - prob_below_thresh_l1
+                prob_above_thresh_l2 = 1 - prob_below_thresh_l2
+                spatial_pdf_l1 = prob_above_thresh_l1 / np.sum(prob_above_thresh_l1)
+                spatial_pdf_l2 = prob_above_thresh_l2 / np.sum(prob_above_thresh_l2)
+                spatial_cdf_l1 = spatial_pdf_l1.cumsum()
+                spatial_cdf_l2 = spatial_pdf_l2.cumsum()
 
                 # finally, construct events
                 evt = pb.Event()
@@ -239,10 +250,20 @@ class Device(threading.Thread):
                     pixels = []
                     pix_coords = []
 
-                    # assume pixels are independent and pass rate is
-                    # the same for remainder of frame w/o replacement
-                    while not pixels or random.random() < prob_pass:
+                    # assume pixels are independent, pass rate is the
+                    # same for remainder of frame w/o replacement, and
+                    # spatial distribution of L2 passes is similar to
+                    # that of L1 passes
+                    while not pixels or random.random() < prob_pass_l2:
                         pix = pb.Pixel()
+                        
+                        if not pixels:
+                            spatial_cdf = spatial_cdf_l1
+                            electron_thresh = electron_thresh_l1
+                        else:
+                            spatial_cdf = spatial_cdf_l2
+                            electron_thresh = electron_thresh_l2
+
                         coord = (spatial_cdf > random.random()).argmax()
                 
                         # make sure no repeats
