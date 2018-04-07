@@ -44,7 +44,7 @@ class Device(threading.Thread):
 
         self._cameras = []
         for i in range(self.N_CAMERAS):
-            self._cameras.append(self.Camera(self))
+            self._cameras.append(self.Camera(self, source_files))
 
         self._hwid = uuid.uuid1().hex[:16]
         
@@ -116,13 +116,13 @@ class Device(threading.Thread):
         ''' generator to yield source data '''
         def _generate_from_source(self, source_files):
             self._set_stream_cfg(self._dev._target_res, self._dev._target_fps)
-            self._rate = self._target_rate
+            self._rate = self._dev._target_rate
             self._l1thresh = 10
-            while True:
-                # pick a random input file and start streaming it
-                f = random.choice(source_files)
 
-                dc = pb.DataChunk.FromString(gzip.open(f).read())
+            # pick a random device and start streaming it
+            f = open(random.choice(source_files), 'rb')
+            dc = pb.DataChunk.FromString(f.read())
+            while True:
                 for xb in dc.exposure_blocks:
                     #print "actual xb has %d events" % len(xb.events)
                     #print "actual xb has interval %d" % ((xb.end_time - xb.start_time)/1e3)
@@ -189,7 +189,7 @@ class Device(threading.Thread):
                 hot_freq = scipy.sparse.csr_matrix((freq, (y, x)), shape=reverse_res)
 
                 # now find threshold based on lens-shading map
-                self._dev._l1thresh = 0
+                self._l1thresh = 0
                 prob_below_thresh_l1 = np.zeros(reverse_res)
                 electron_thresh_l1 = np.zeros(reverse_res)
                 prob_pass_l1 = 1
@@ -197,14 +197,14 @@ class Device(threading.Thread):
 
                 while prob_pass_l1 > target_prob_pass:
                     prob_pass_l2 = prob_pass_l1
-                    self._dev._l1thresh += 1
+                    self._l1thresh += 1
 
                     # The effective spatial threshold due to weighting.
                     #
                     # N.B. the +1 is because values need to be strictly 
                     # greater than the L1 thresh to pass but we want this
                     # as a cdf
-                    weighted_thresh = np.floor((self._dev._l1thresh+0.5)/self._weights).astype(int) + 1
+                    weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights).astype(int) + 1
                 
                     # Now convert thresholds to e- counts
                     electron_thresh_l2 = electron_thresh_l1
@@ -227,7 +227,7 @@ class Device(threading.Thread):
 
                     prob_pass_l2 = prob_pass_l1
                     prob_pass_l1 = 1 - np.product(prob_below_thresh_l1)
-                    print('L1 = {0}, pass rate = {1}'.format(self._dev._l1thresh, prob_pass_l1))
+                    print('L1 = {0}, pass rate = {1}'.format(self._l1thresh, prob_pass_l1))
 
                 self._rate = prob_pass_l1 * self._fps
 
@@ -317,8 +317,8 @@ class Device(threading.Thread):
         xb.res_y = camera._res[1]
         xb.battery_temp = int(self._temp)
         xb.battery_end_temp = int(self._change_temp(camera))
-        xb.L1_thresh = self._l1thresh
-        xb.L2_thresh = self._l1thresh - 1
+        xb.L1_thresh = camera._l1thresh
+        xb.L2_thresh = camera._l1thresh - 1
         xb.L1_processed = int(camera._fps * interval)
         xb.L2_processed = len(xb.events)
         xb.L1_pass = xb.L2_processed
@@ -424,7 +424,7 @@ if __name__ == "__main__":
     parser.add_argument("--server", required=True, help="the server hostname/address")
     parser.add_argument("--rate", default=0.5, type=float, help="the nominal event rate in Hz")
     parser.add_argument("--interval", default=120, type=float, help="the nominal communication interval in seconds")
-    parser.add_argument("--source", action='store_true', help="Stream events from live data")
+    parser.add_argument("--source", help="Data directory to stream events from.  If empty, use simulated data")
     parser.add_argument("--nowait", action='store_true', help="Do not pause before sending the first event.")
     parser.add_argument("--tlimit", type=int, help="Limit the amount of time to send data (in minutes)")
     parser.add_argument("--genfile", help="when set, save request body to file of this name")
@@ -443,12 +443,11 @@ if __name__ == "__main__":
         # pick a random file if the source was never specified
         source_files=None
         if args.source:
-            raise NotImplementedError
-            data_dirs = os.listdir('data')
-            data_dirs.remove('fetch.sh')
-            source_path = os.path.join('data', random.choice(data_dirs))
-            source_files = glob(os.path.join(source_path, '*.bin.gz'))
-            print('Using files from {0}'.format(source_path))
+            print("Using data from source files")
+            datafiles = os.listdir(args.source)
+            datafiles.remove('fetch.sh')
+            datafiles.remove('consolidate.py')
+            source_files = list(map(lambda f: os.path.join(args.source, f), datafiles))
 
         dev = Device(args.server, source_files=source_files, appcode=args.appcode, xb_period=args.interval, rate=args.rate, gen=args.genfile, err=args.errfile)
         devices.append(dev)
