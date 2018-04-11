@@ -46,7 +46,8 @@ class Device(threading.Thread):
         for i in range(self.N_CAMERAS):
             self._cameras.append(self.Camera(self, source_files))
 
-        self._hwid = uuid.uuid1().hex[:16]
+        self._hwid = uuid.uuid4().hex[:16]
+        print("hwid = ", self._hwid)
         
         self._appcode = appcode
         if not self._appcode:
