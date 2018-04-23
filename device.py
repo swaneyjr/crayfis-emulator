@@ -309,8 +309,14 @@ class Device(threading.Thread):
         xb = pb.ExposureBlock()
         xb.events.extend(camera.stream(interval))
         xb.run_id = run_id.int & 0xFFFFFFFF
-        xb.start_time = int(time.time()*1e3)
-        xb.end_time = int(time.time()*1e3 + interval*1e3)
+
+        xb.start_time_nano = int(time.time()*1e9)
+        xb.end_time_nano = int(time.time()*1e9 + interval*1e9)
+        xb.start_time = xb.start_time_nano//1000000
+        xb.end_time = xb.end_time_nano//1000000
+        xb.start_time_ntp = xb.start_time
+        xb.end_time_ntp = xb.end_time
+
         xb.gps_lat = self._loc[0]
         xb.gps_lon = self._loc[1]
         xb.daq_state = 2
