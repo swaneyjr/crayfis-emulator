@@ -71,21 +71,36 @@ class Device(threading.Thread):
         self._temp = self._room_temp
         self._plateau_temp_1080p = np.random.normal(loc=350, scale=20) - 230
         self._plateau_temp_pow = np.random.lognormal()
+        self._overheat_temp = 410
 
         self._genfile = gen
         self._errfile = err
 
         self._terminate = threading.Event()
 
+    def _make_run_config(self, camera_id):
+       
+        self._run_id = uuid.uuid1()
+        rc = pb.RunConfig()
+
+        rc.id_lo = self._run_id.int & 0xFFFFFFFF
+        rc.start_time = int(time.time() * 1000)
+        rc.crayfis_build = "emulator v0.2"
+        rc.hw_params = "build-manufacturer=emulator;build-device=emulator;build-model=emulator;"
+        rc.os_params = "emulator"
+        rc.camera_id = camera_id
+
+        return rc
+
 
     ''' make a dummy exposure block and fill it with the given events '''
-    def _make_xb(self, camera_id, run_id, interval=120):
+    def _make_xb(self, camera_id, interval=120):
 
         camera = self._cameras[camera_id]
 
         xb = pb.ExposureBlock()
         xb.events.extend(camera.stream(interval))
-        xb.run_id = run_id.int & 0xFFFFFFFF
+        xb.run_id = self._run_id.int & 0xFFFFFFFF
 
         xb.start_time_nano = int(time.time()*1e9)
         xb.end_time_nano = int(time.time()*1e9 + interval*1e9)
@@ -109,16 +124,16 @@ class Device(threading.Thread):
         xb.L1_skip = 0
         xb.L2_pass = xb.L2_processed
         xb.L2_skip = 0
-        xb.aborted = (np.random.random()>0.995)
+        xb.aborted = (xb.battery_end_temp >= self._overheat_temp)
         return xb
 
-    def _make_header(self, run_id):
+    def _make_header(self):
         headers = {}
         headers['Content-type'] = "application/octet-stream"
-        headers['Crayfis-version'] = 'emulator v0.1'
+        headers['Crayfis-version'] = 'emulator v0.2'
         headers['Crayfis-version-code'] = '1'
         headers['Device-id'] = self._hwid
-        headers['Run-id'] = str(run_id)
+        headers['Run-id'] = str(self._run_id)
         headers['App-code'] = self._appcode
         return headers
 
@@ -141,7 +156,7 @@ class Device(threading.Thread):
             compressed = np.array(bytearray(cmd['weights']))
             uncompressed = cv2.imdecode(compressed_weights, 0)
             resized = cv2.resize(uncompressed, (self._res[1], self._res[0]), interpolation=cv2.INTER_CUBIC)
-            self._cameras[camera_id]._weights = resized
+            self._cameras[camera_id]._weights = resized/255
             recalibrate=True
         if 'set_hotcells' in resp:
             cmd = resp['set_hotcells']
@@ -161,6 +176,8 @@ class Device(threading.Thread):
         if 'set_target_fps' in resp:
             self._target_fps = resp['set_target_fps']
             recalibrate=True
+        if 'set_battery_overheat_temp' in resp:
+            self._overheat_temp = resp['set_battery_overheat_temp']
         if 'cmd_recalibrate' in resp:
             recalibrate=True
         
@@ -170,9 +187,7 @@ class Device(threading.Thread):
 
     def run(self):
 
-        run_id = uuid.uuid1()
         camera_id = np.random.randint(self.N_CAMERAS)
-        print('camera_id =', camera_id)
         xbn = 1
 
         while not self._terminate.is_set():
@@ -180,17 +195,22 @@ class Device(threading.Thread):
             # sleep for the specified period (give or take 5%)
             sleep_time = self._xb_period * np.random.normal(1,0.05)
 
-            # make an xb for this period with the expected number of events
-            with EVT_LOCK:
-                xb = self._make_xb(camera_id, run_id, sleep_time)
-            xb.xbn = xbn
-            xbn += 1
-
             dc = pb.DataChunk()
-            dc.exposure_blocks.extend([xb])
+
+            if not hasattr(self, '_run_id'):
+            # make a run config
+                rc = self._make_run_config(camera_id)
+                dc.run_configs.extend([rc])
+            else:
+            # make an xb for this period with the expected number of events
+                with EVT_LOCK:
+                    xb = self._make_xb(camera_id, sleep_time)
+                xb.xbn = xbn
+                xbn += 1
+                dc.exposure_blocks.extend([xb])
 
             conn = http.client.HTTPConnection(self._server)
-            headers = self._make_header(run_id)
+            headers = self._make_header()
             body = dc.SerializeToString()
             if self._genfile:
                 f = open(self._genfile, 'w')
