@@ -20,8 +20,8 @@ RUN if [ ! -e ./*.bin ]; then \
 WORKDIR /crayfis-emulator
 
 # move to the working directory and install requirements
-#ADD requirements.txt /crayfis-emulator/requirements.txt
-#RUN pip3 install -r /crayfis-emulator/requirements.txt
+ADD requirements.txt /crayfis-emulator/requirements.txt
+RUN pip3 install -r /crayfis-emulator/requirements.txt
 
 ENV SLEEP_TIME=10
 ENV SERVER=crayfis-site

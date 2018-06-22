@@ -150,7 +150,7 @@ class Camera:
                     
                     if self._hotcell_mask:
                         # use fancy indexing to mask
-                        hot_e_array[list(zip(*map(lambda xy: (xy%self._res[0], xy//self._res[0]), self._hotcell_mask)))] = 0
+                        hot_e_array[list(zip(*map(lambda xy: (xy//self._res[0], xy%self._res[0]), self._hotcell_mask)))] = 0
                     hot_freq_array = hot_freq.toarray()
                     hotcell_cdf_l1 = np.where(electron_thresh_l1 < hot_e_array, 1-hot_freq_array, 1)
                     hotcell_cdf_l2 = np.where(electron_thresh_l2 < hot_e_array, 1-hot_freq_array, 1)

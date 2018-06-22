@@ -78,7 +78,7 @@ class Device(threading.Thread):
 
         self._terminate = threading.Event()
 
-    def _make_run_config(self, camera_id):
+    def _make_run_config(self):
        
         self._run_id = uuid.uuid1()
         rc = pb.RunConfig()
@@ -88,15 +88,39 @@ class Device(threading.Thread):
         rc.crayfis_build = "emulator v0.2"
         rc.hw_params = "build-manufacturer=emulator;build-device=emulator;build-model=emulator;"
         rc.os_params = "emulator"
-        rc.camera_id = camera_id
+        rc.camera_id = self._camera_id
 
         return rc
 
+    def _make_precal_result(self):
+
+        pc = pb.PreCalibrationResult()
+        pc.run_id = self._run_id.int & 0xFFFFFFFF
+        pc.start_time = int(time.time() * 1000)
+        pc.battery_temp = int(self._temp)
+
+        camera = self._cameras[self._camera_id]
+        # call stream method to configure camera params
+        camera.stream(0)
+        pc.res_x = camera._res[0]
+
+        sample_res = (48, 27)
+        weights = np.full(sample_res, 255)
+        fmt = '.jpeg'
+        params = (cv2.IMWRITE_JPEG_QUALITY, 100)
+        retval, encoded = cv2.imencode(fmt, weights, params=params)
+        pc.compressed_weights = bytes(encoded)
+        pc.compressed_format = fmt
+        pc.sample_res_x = sample_res[0]
+        pc.sample_res_y = sample_res[1]
+
+        pc.end_time = int(time.time() * 1000)
+        return pc
 
     ''' make a dummy exposure block and fill it with the given events '''
-    def _make_xb(self, camera_id, interval=120):
+    def _make_xb(self, interval=120):
 
-        camera = self._cameras[camera_id]
+        camera = self._cameras[self._camera_id]
 
         xb = pb.ExposureBlock()
         xb.events.extend(camera.stream(interval))
@@ -135,6 +159,7 @@ class Device(threading.Thread):
         headers['Device-id'] = self._hwid
         headers['Run-id'] = str(self._run_id)
         headers['App-code'] = self._appcode
+        headers['Camera-id'] = self._camera_id
         return headers
 
     def _change_temp(self, camera):
@@ -161,7 +186,7 @@ class Device(threading.Thread):
         if 'set_hotcells' in resp:
             cmd = resp['set_hotcells']
             camera_id = cmd['camera_id']
-            hotcells = set(map(lambda hx: int(hx, 16), cmd['hotcells']))
+            hotcells = set(cmd['hotcells'])
             if 'override' in resp['set_hotcells'].keys() \
                     and cmd['override']:
                 self._cameras[camera_id]._hotcell_mask = hotcells
@@ -187,7 +212,7 @@ class Device(threading.Thread):
 
     def run(self):
 
-        camera_id = np.random.randint(self.N_CAMERAS)
+        self._camera_id = np.random.randint(self.N_CAMERAS)
         xbn = 1
 
         while not self._terminate.is_set():
@@ -198,13 +223,15 @@ class Device(threading.Thread):
             dc = pb.DataChunk()
 
             if not hasattr(self, '_run_id'):
-            # make a run config
-                rc = self._make_run_config(camera_id)
+            # make a run config and precalibration result
+                rc = self._make_run_config()
                 dc.run_configs.extend([rc])
+                pc = self._make_precal_result()
+                dc.precalibration_results.extend([pc])
             else:
             # make an xb for this period with the expected number of events
                 with EVT_LOCK:
-                    xb = self._make_xb(camera_id, sleep_time)
+                    xb = self._make_xb(sleep_time)
                 xb.xbn = xbn
                 xbn += 1
                 dc.exposure_blocks.extend([xb])
@@ -277,7 +304,7 @@ if __name__ == "__main__":
         # PROTIP: stack trace from other threads doesn't appear
         # on docker logs, but debugging can be done by changing
         # 'start' to 'run'
-        dev.start()
+        dev.run()
         if not args.nowait:
             wait_time = np.random.exponential(args.interval/args.ndev)
             wait_time = min(wait_time, args.interval)
