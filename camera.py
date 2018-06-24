@@ -61,8 +61,6 @@ class Camera:
             
         while True:
             self._set_stream_cfg(self._dev._target_res, self._dev._target_fps)
-        
-            GAIN = 1/20 # ~5 e-/ADC x 4 ADC/pix_val
 
             # test distributions
             LENS_SHADE_MAPS = [
@@ -74,27 +72,28 @@ class Camera:
                     ]
 
             reverse_res = (self._res[1], self._res[0])
+
+            if not hasattr(self, '_weights') or self._weights.shape != reverse_res:
+                self._weights = np.ones(reverse_res)
+                self._hotcell_mask = set()
     
-            # tail in actual data seems to fall off roughly exponentially
-            def electron_cdf(val):
-                return stats.expon.cdf(val, scale=self._electron_mean)
+            # large N poisson shifted to maintain black levels
+            def val_cdf(val):
+                return np.maximum(stats.norm.cdf(val, scale=self._val_sigma), 0)
 
             if not hasattr(self, '_lens_shade_map'):
-                self._lens_shade_map = np.random.choice(LENS_SHADE_MAPS)
-            if not hasattr(self, '_weights'):
-                self._weights = np.ones(reverse_res)
+                self._lens_shade_map = np.random.choice(LENS_SHADE_MAPS) 
 
-            if not hasattr(self, '_electron_mean'):
-                self._electron_mean = np.random.lognormal(mean=2.5, sigma=0.3)
+            if not hasattr(self, '_val_sigma'):
+                self._val_sigma = np.random.lognormal(mean=0.8, sigma=0.1)
             if not hasattr(self, '_hotcells'):
-                self._hotcell_mask = set()
                 n_hotcells = np.random.poisson(lam=10)
                 if n_hotcells:
                     x = np.random.uniform(low=-8, high=8, size=n_hotcells)
                     y = np.random.uniform(low=-4.5, high=4.5, size=n_hotcells)
-                    e = np.random.poisson(lam=20*self._electron_mean, size=n_hotcells)
+                    val = np.random.poisson(lam=10*self._val_sigma, size=n_hotcells)
                     freq = np.random.exponential(scale=0.003, size=n_hotcells)
-                    self._hotcells = (x, y, e, freq)
+                    self._hotcells = (x, y, val, freq)
                 else:
                     self._hotcells = []
 
@@ -105,21 +104,22 @@ class Camera:
             
             # turn the map function into a numpy array with meshgrid
             xx, yy = np.meshgrid(xvals, yvals, sparse=True)
-            gain_map = GAIN * (self._lens_shade_map(xx, yy)*np.ones(reverse_res))
+            gain_map = self._lens_shade_map(xx, yy)*np.ones(reverse_res)
 
             # find corresponding hotcell coordinates
-            x_unscaled, y_unscaled, electrons, freq = self._hotcells
-            x = ((x_unscaled/16 + 0.5)*self._res[0]).astype(int)
-            y = ((y_unscaled/9 + 0.5)*self._res[1]).astype(int)
-            print("Hotcells at: ", list(zip(x, y, electrons, freq)))
+            if self._hotcells:
+                x_unscaled, y_unscaled, vals, freq = self._hotcells
+                x = ((x_unscaled/16 + 0.5)*self._res[0]).astype(int)
+                y = ((y_unscaled/9 + 0.5)*self._res[1]).astype(int)
+                print("Hotcells at: ", list(zip(x, y, vals, freq)))
 
-            hot_electrons = sparse.csr_matrix((electrons, (y, x)), shape=reverse_res) 
-            hot_freq = sparse.csr_matrix((freq, (y, x)), shape=reverse_res)
+                hot_vals = sparse.csr_matrix((vals, (y, x)), shape=reverse_res) 
+                hot_freq = sparse.csr_matrix((freq, (y, x)), shape=reverse_res)
 
             # now find threshold based on lens-shading map
             self._l1thresh = 0
             prob_below_thresh_l1 = np.zeros(reverse_res)
-            electron_thresh_l1 = np.zeros(reverse_res)
+            val_thresh_l1 = np.zeros(reverse_res)
             prob_pass_l1 = 1
             target_prob_pass = self._dev._target_rate / self._fps
 
@@ -135,27 +135,27 @@ class Camera:
                 weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights).astype(int) + 1
                 
                 # Now convert thresholds to e- counts
-                electron_thresh_l2 = electron_thresh_l1
-                electron_thresh_l1 = (weighted_thresh / gain_map).astype(int)
+                val_thresh_l2 = val_thresh_l1
+                val_thresh_l1 = (weighted_thresh / gain_map).astype(int)
 
                 # Get grid of probabilities each pixel will be below threshold
                 # for any given frame, replacing by hotcell probability where
                 # applicable
                 prob_below_thresh_l2 = prob_below_thresh_l1
-                prob_below_thresh_l1 = electron_cdf(electron_thresh_l1)
+                prob_below_thresh_l1 = val_cdf(val_thresh_l1)
                 
                 if self._hotcells:
                     #FIXME: this probably could be more efficient
-                    hot_e_array = hot_electrons.toarray()
+                    hot_val_array = hot_vals.toarray()
                     
                     if self._hotcell_mask:
                         # use fancy indexing to mask
-                        hot_e_array[list(zip(*map(lambda xy: (xy//self._res[0], xy%self._res[0]), self._hotcell_mask)))] = 0
+                        hot_val_array[list(zip(*map(lambda xy: (xy//self._res[0], xy%self._res[0]), self._hotcell_mask)))] = 0
                     hot_freq_array = hot_freq.toarray()
-                    hotcell_cdf_l1 = np.where(electron_thresh_l1 < hot_e_array, 1-hot_freq_array, 1)
-                    hotcell_cdf_l2 = np.where(electron_thresh_l2 < hot_e_array, 1-hot_freq_array, 1)
-                    prob_below_thresh_l1 = np.where(hot_e_array > 0, hotcell_cdf_l1, prob_below_thresh_l1)
-                    prob_below_thresh_l2 = np.where(hot_e_array > 0, hotcell_cdf_l2, prob_below_thresh_l2)
+                    hotcell_cdf_l1 = np.where(val_thresh_l1 < hot_val_array, 1-hot_freq_array, 1)
+                    hotcell_cdf_l2 = np.where(val_thresh_l2 < hot_val_array, 1-hot_freq_array, 1)
+                    prob_below_thresh_l1 = np.where(hot_val_array > 0, hotcell_cdf_l1, prob_below_thresh_l1)
+                    prob_below_thresh_l2 = np.where(hot_val_array > 0, hotcell_cdf_l2, prob_below_thresh_l2)
 
                 prob_pass_l2 = prob_pass_l1
                 prob_pass_l1 = 1 - np.product(prob_below_thresh_l1)
@@ -191,10 +191,10 @@ class Camera:
                         
                     if not pixels:
                         spatial_cdf = spatial_cdf_l1
-                        electron_thresh = electron_thresh_l1
+                        val_thresh = val_thresh_l1
                     else:
                         spatial_cdf = spatial_cdf_l2
-                        electron_thresh = electron_thresh_l2
+                        val_thresh = val_thresh_l2
 
                     coord = (spatial_cdf > np.random.random()).argmax()
                 
@@ -205,14 +205,14 @@ class Camera:
                     pix.x = coord % self._res[0]
                     pix.y = coord // self._res[0]
 
-                    if hot_freq[pix.y, pix.x]:
-                        n_electrons = hot_electrons[pix.y, pix.x]
+                    if self._hotcells and hot_freq[pix.y, pix.x]:
+                        val = hot_vals[pix.y, pix.x]
                     else:
-                        cdf_array = electron_cdf(np.arange(256/GAIN))   
+                        cdf_array = val_cdf(np.arange(256))   
                         # get val from cdf above the L1 threshold
-                        n_electrons = (cdf_array > np.random.uniform(cdf_array[electron_thresh[pix.y, pix.x]], 1)).argmax()
+                        val = (cdf_array > np.random.uniform(cdf_array[val_thresh[pix.y, pix.x]], 1)).argmax()
 
-                    pix.val = int(n_electrons * gain_map[pix.y, pix.x])
+                    pix.val = int(val * gain_map[pix.y, pix.x])
                     pix.adjusted_val = int(self._weights[pix.y, pix.x] * pix.val)
 
                     pixels.append(pix)
@@ -224,7 +224,7 @@ class Camera:
                 yield evt
 
     def stream(self, time):
-        if not hasattr(self, '_rate'):
+        if not hasattr(self, '_rate') or not time:
             next(self._event_stream)
         n_events = np.random.poisson(time * self._rate)
         print("uploaded {} events...".format(n_events))

@@ -70,7 +70,7 @@ class Device(threading.Thread):
         self._room_temp = np.random.normal(loc=230, scale=20)
         self._temp = self._room_temp
         self._plateau_temp_1080p = np.random.normal(loc=350, scale=20) - 230
-        self._plateau_temp_pow = np.random.lognormal()
+        self._plateau_temp_pow = np.random.lognormal(0, 0.5)
         self._overheat_temp = 410
 
         self._genfile = gen
@@ -171,7 +171,7 @@ class Device(threading.Thread):
         # use exponential model for dT/dt with Gaussian fluctuations
         self._temp += (plateau_temp - self._temp)/5 + np.random.normal(scale=5)
         print("Temperature changed to {}".format(self._temp))
-        return self._temp
+        return min(self._temp, self._overheat_temp)
 
     def _apply_commands(self, resp):
         recalibrate=False
@@ -196,8 +196,26 @@ class Device(threading.Thread):
         if 'set_xb_period' in resp:
             self._xb_period = resp['set_xb_period']
         if 'set_target_resolution' in resp:
-            self._target_res = tuple(map(int, resp['set_target_resolution'].split('x')))
-            recalibrate=True
+            resp_res = resp['set_target_resolution']
+            if resp_res == '+' or resp_res == '-':
+                camera = self._cameras[self._camera_id]
+                try:
+                    res_id = camera.RESOLUTIONS.index(camera._res)
+                    if resp_res == '+' and res_id < len(camera.RESOLUTIONS)-1:
+                        res_id += 1    
+                        recalibrate=True
+                    elif resp_res == '-' and res_id > 0:
+                        res_id -= 1
+                        recalibrate=True
+                except ValueError:
+                    res_id = 0
+
+                self._target_res = camera.RESOLUTIONS[res_id]
+            else:
+                self._target_res = tuple(map(int, resp['set_target_resolution'].split('x')))
+                recalibrate=True
+            # send another precal result
+            self._run_id=None
         if 'set_target_fps' in resp:
             self._target_fps = resp['set_target_fps']
             recalibrate=True
@@ -222,12 +240,13 @@ class Device(threading.Thread):
 
             dc = pb.DataChunk()
 
-            if not hasattr(self, '_run_id'):
+            if not hasattr(self, '_run_id') or not self._run_id:
             # make a run config and precalibration result
                 rc = self._make_run_config()
                 dc.run_configs.extend([rc])
                 pc = self._make_precal_result()
                 dc.precalibration_results.extend([pc])
+                print("Sending run config and precal result")
             else:
             # make an xb for this period with the expected number of events
                 with EVT_LOCK:
@@ -304,12 +323,12 @@ if __name__ == "__main__":
         # PROTIP: stack trace from other threads doesn't appear
         # on docker logs, but debugging can be done by changing
         # 'start' to 'run'
-        dev.run()
+        dev.start()
         if not args.nowait:
             wait_time = np.random.exponential(args.interval/args.ndev)
             wait_time = min(wait_time, args.interval)
             print('waiting {0:.1f} seconds before spawning next device'.format(wait_time))
-
+            time.sleep(wait_time)
     try:
         while True:
             if args.tlimit and (time.time() - tstart)/60 > args.tlimit:
