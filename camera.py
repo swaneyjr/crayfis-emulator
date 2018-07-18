@@ -2,7 +2,12 @@ import crayon.crayfis_data_pb2 as pb
 import itertools as it
 import numpy as np
 from scipy import stats, sparse
+import json
 import time
+import cv2
+import uuid
+from base64 import b64decode
+from http.client import HTTPConnection
 
 ''' Utility class for handling multiple cameras in a single device'''
 class Camera:
@@ -55,6 +60,41 @@ class Camera:
                 for evt in xb.events:
                     yield evt
 
+    def get_precal_from_server(self):
+        conn = HTTPConnection(self._dev._server)
+        body = json.dumps({
+                'device_id': self._dev._hwid,
+                'camera_id': self._dev._camera_id,
+                'res': '%dx%d' % self._res,
+                })
+
+        header = self._dev._make_header()
+
+        conn.request("POST", "/precal.json", body, header)
+        resp = conn.getresponse()
+        resp_body = None
+        retval = resp.status in (200, 202)
+        if retval:
+            resp_body = json.loads(resp.read())
+            compressed = np.array(bytearray(b64decode(resp_body['weights'])))
+            uncompressed = cv2.imdecode(compressed, 0).transpose()
+            resized = cv2.resize(uncompressed, self._res, interpolation=cv2.INTER_CUBIC)
+            self._weights = resized/255
+            self._hotcell_mask = set(resp_body['mask'])
+            self._precal_id = uuid.UUID(hex=resp_body['precal_id'])
+            self._is_calibrated = False
+
+        elif resp.status != 204:
+            print("got unexpected status code ({0})".format(resp.status))
+            with open(self._dev._errfile, 'w') as errfile:
+                print(resp.read(), file=errfile)
+                print("wrote error to", self._dev._errfile)
+
+
+        print("GOT response {0} from /precal.json: {1}".format(resp.status, resp_body))
+        return retval, resp
+
+
 
     ''' create a distribution from a lens-shading map and randomly add hotcells '''
     def _simulate_events(self):
@@ -65,34 +105,46 @@ class Camera:
             # test distributions
             LENS_SHADE_MAPS = [
                     lambda x,y: 1,
-                    lambda x,y: 1 + np.exp(-3*((x-3)**2 + (y+2)**2)), # bad spot
+                    lambda x,y: 1 + 0.5*np.exp(-3*((x-3)**2 + (y+2)**2)), # bad spot
                     lambda x,y: 1 + (x**2 + y**2)/250, # radial distr
                     lambda x,y: 1 + np.exp(x/10)/5, # x only
                     lambda x,y: np.cosh(((x-1)**2 + y**2)**0.5 / 12), # off-radial
+                    lambda x,y: 1 + np.abs(x*y/100 - np.exp(-x**2/3)/3), # non-trivial
                     ]
 
             reverse_res = (self._res[1], self._res[0])
 
             if not hasattr(self, '_weights') or self._weights.shape != reverse_res:
-                self._weights = np.ones(reverse_res)
-                self._hotcell_mask = set()
+                # try to pull from server
+                retval, resp = self.get_precal_from_server()
+                if not retval:
+                    # no weights/hotcells
+                    self._weights = np.ones(reverse_res)
+                    self._hotcell_mask = set()
+                    self._send_precal = True
+                    
+                    if resp.status != 204:
+                        print("got unexpected status code ({})".format(resp.status))
+                        with open(self._dev._errfile, 'w') as errfile:
+                            print(resp.read(), file=errfile)
+                            print("wrote error to", self._dev._errfile) 
     
             # large N poisson shifted to maintain black levels
             def val_cdf(val):
-                return np.maximum(stats.norm.cdf(val, scale=self._val_sigma), 0)
+                return np.maximum(stats.norm.cdf(val, loc=-self._val_sigma, scale=self._val_sigma), 0)
 
             if not hasattr(self, '_lens_shade_map'):
                 self._lens_shade_map = np.random.choice(LENS_SHADE_MAPS) 
 
             if not hasattr(self, '_val_sigma'):
-                self._val_sigma = np.random.lognormal(mean=0.8, sigma=0.1)
+                self._val_sigma = np.random.lognormal(mean=1.2, sigma=0.1)
             if not hasattr(self, '_hotcells'):
                 n_hotcells = np.random.poisson(lam=10)
                 if n_hotcells:
                     x = np.random.uniform(low=-8, high=8, size=n_hotcells)
                     y = np.random.uniform(low=-4.5, high=4.5, size=n_hotcells)
-                    val = np.random.poisson(lam=10*self._val_sigma, size=n_hotcells)
-                    freq = np.random.exponential(scale=0.003, size=n_hotcells)
+                    val = np.random.poisson(lam=7*self._val_sigma, size=n_hotcells)
+                    freq = np.minimum(np.random.exponential(scale=0.003, size=n_hotcells), .01)
                     self._hotcells = (x, y, val, freq)
                 else:
                     self._hotcells = []
@@ -123,7 +175,7 @@ class Camera:
             prob_pass_l1 = 1
             target_prob_pass = self._dev._target_rate / self._fps
 
-            while prob_pass_l1 > target_prob_pass:
+            while prob_pass_l1 > target_prob_pass and self._l1thresh < 255:
                 prob_pass_l2 = prob_pass_l1
                 self._l1thresh += 1
 
@@ -132,7 +184,9 @@ class Camera:
                 # N.B. the +1 is because values need to be strictly 
                 # greater than the L1 thresh to pass but we want this
                 # as a cdf
-                weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights).astype(int) + 1
+                weighted_thresh = np.floor((self._l1thresh+0.5)/self._weights) + 1
+                weighted_thresh[np.isinf(weighted_thresh)] = 255
+                weighted_thresh = weighted_thresh.astype(int)
                 
                 # Now convert thresholds to e- counts
                 val_thresh_l2 = val_thresh_l1
@@ -224,7 +278,7 @@ class Camera:
                 yield evt
 
     def stream(self, time):
-        if not hasattr(self, '_rate') or not time:
+        if not hasattr(self, '_rate'):
             next(self._event_stream)
         n_events = np.random.poisson(time * self._rate)
         print("uploaded {} events...".format(n_events))

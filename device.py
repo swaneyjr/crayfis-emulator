@@ -10,6 +10,8 @@ import numpy as np
 import cv2
 import random
 import time
+import math
+from base64 import b64decode
 import json
 import uuid
 import http.client
@@ -70,7 +72,7 @@ class Device(threading.Thread):
         self._room_temp = np.random.normal(loc=230, scale=20)
         self._temp = self._room_temp
         self._plateau_temp_1080p = np.random.normal(loc=350, scale=20) - 230
-        self._plateau_temp_pow = np.random.lognormal(0, 0.5)
+        self._plateau_temp_pow = np.random.lognormal(-1, 0.5)
         self._overheat_temp = 410
 
         self._genfile = gen
@@ -92,39 +94,48 @@ class Device(threading.Thread):
 
         return rc
 
-    def _make_precal_result(self):
+    def _make_precal_result(self, camera):
 
         pc = pb.PreCalibrationResult()
-        pc.run_id = self._run_id.int & 0xFFFFFFFF
+        pc.run_id = self._run_id.int % 2**64
+        pc.run_id_hi = self._run_id.int // 2**64
+        camera._precal_id = uuid.uuid4()
+        pc.precal_id = camera._precal_id.int % 2**64
+        pc.precal_id_hi = camera._precal_id.int // 2**64
         pc.start_time = int(time.time() * 1000)
         pc.battery_temp = int(self._temp)
 
-        camera = self._cameras[self._camera_id]
-        # call stream method to configure camera params
-        camera.stream(0)
-        pc.res_x = camera._res[0]
+        pc.res_x, pc.res_y = camera._res
 
-        sample_res = (48, 27)
+        # use the same algorithm as the app for weight dimensions
+        res_max = 1500
+        block_size = math.gcd(*(camera._res))
+        sample_step = int((camera._res[0] * camera._res[1] / res_max) ** 0.5)
+        while block_size % sample_step != 0:
+            sample_step += 1
+            if sample_step > block_size:
+                raise ValueError
+
+        sample_res = tuple(r // sample_step for r in camera._res)
         weights = np.full(sample_res, 255)
         fmt = '.jpeg'
         params = (cv2.IMWRITE_JPEG_QUALITY, 100)
         retval, encoded = cv2.imencode(fmt, weights, params=params)
         pc.compressed_weights = bytes(encoded)
         pc.compressed_format = fmt
-        pc.sample_res_x = sample_res[0]
-        pc.sample_res_y = sample_res[1]
 
         pc.end_time = int(time.time() * 1000)
         return pc
 
     ''' make a dummy exposure block and fill it with the given events '''
-    def _make_xb(self, interval=120):
-
-        camera = self._cameras[self._camera_id]
+    def _make_xb(self, camera, interval=120):
 
         xb = pb.ExposureBlock()
         xb.events.extend(camera.stream(interval))
-        xb.run_id = self._run_id.int & 0xFFFFFFFF
+        xb.run_id = self._run_id.int % 2**64
+        xb.run_id_hi = self._run_id.int // 2**64
+        xb.precal_id = camera._precal_id.int % 2**64
+        xb.precal_id_hi = camera._precal_id.int // 2**64
 
         xb.start_time_nano = int(time.time()*1e9)
         xb.end_time_nano = int(time.time()*1e9 + interval*1e9)
@@ -152,15 +163,15 @@ class Device(threading.Thread):
         return xb
 
     def _make_header(self):
-        headers = {}
-        headers['Content-type'] = "application/octet-stream"
-        headers['Crayfis-version'] = 'emulator v0.2'
-        headers['Crayfis-version-code'] = '1'
-        headers['Device-id'] = self._hwid
-        headers['Run-id'] = str(self._run_id)
-        headers['App-code'] = self._appcode
-        headers['Camera-id'] = self._camera_id
-        return headers
+        return {
+            'Content-type': "application/octet-stream",
+            'Crayfis-version': 'emulator v0.3',
+            'Crayfis-version-code': '1',
+            'Device-id': self._hwid,
+            'Run-id': str(self._run_id),
+            'App-code': self._appcode,
+            'Camera-id': self._camera_id,
+            }
 
     def _change_temp(self, camera):
         # assume plateau temp has a power law relationship with res*fps
@@ -170,50 +181,57 @@ class Device(threading.Thread):
         
         # use exponential model for dT/dt with Gaussian fluctuations
         self._temp += (plateau_temp - self._temp)/5 + np.random.normal(scale=5)
-        print("Temperature changed to {}".format(self._temp))
         return min(self._temp, self._overheat_temp)
 
     def _apply_commands(self, resp):
         recalibrate=False
+        camera = self._cameras[self._camera_id]
         if 'set_weights' in resp:
             cmd = resp['set_weights']
-            camera_id = cmd['camera_id']
-            compressed = np.array(bytearray(cmd['weights']))
-            uncompressed = cv2.imdecode(compressed_weights, 0)
-            resized = cv2.resize(uncompressed, (self._res[1], self._res[0]), interpolation=cv2.INTER_CUBIC)
-            self._cameras[camera_id]._weights = resized/255
-            recalibrate=True
+            if camera._res == (cmd['res_x'], cmd['res_y']):
+                camera = self._cameras[cmd['camera_id']]
+                compressed = np.array(bytearray(b64decode(cmd['weights'])))
+                uncompressed = cv2.imdecode(compressed, 0).transpose()
+                resized = cv2.resize(uncompressed, camera._res, interpolation=cv2.INTER_CUBIC)
+                camera._weights = resized/255
+                camera._precal_id = uuid.UUID(hex=cmd['precal_id'])
+                recalibrate=True
         if 'set_hotcells' in resp:
             cmd = resp['set_hotcells']
-            camera_id = cmd['camera_id']
-            hotcells = set(cmd['hotcells'])
-            if 'override' in resp['set_hotcells'].keys() \
-                    and cmd['override']:
-                self._cameras[camera_id]._hotcell_mask = hotcells
-            else:
-                self._cameras[camera_id]._hotcell_mask.update(hotcells)
-            recalibrate=True
+            if camera._res == (cmd['res_x'], cmd['res_y']):
+                camera_id = cmd['camera_id']
+                hotcells = set(cmd['hotcells'])
+                camera._hotcell_mask.update(hotcells)
+                camera._precal_id = uuid.UUID(hex=cmd['precal_id'])
+                recalibrate=True
+        if 'update_precal' in resp:
+            cmd = resp['update_precal']
+            camera = self._cameras[self._camera_id]
+            if camera._precal_id.hex != cmd['precal_id'] \
+                    and self._camera_id == cmd['camera_id'] \
+                    and camera._res == (cmd['res_x'], cmd['res_y']): 
+                camera.get_precal_from_server()
         if 'set_xb_period' in resp:
             self._xb_period = resp['set_xb_period']
-        if 'set_target_resolution' in resp:
-            resp_res = resp['set_target_resolution']
-            if resp_res == '+' or resp_res == '-':
-                camera = self._cameras[self._camera_id]
+        if 'change_data_rate' in resp:
+            cmd = resp['change_data_rate']
+            camera = self._cameras[self._camera_id]
+            if camera._res == (cmd['res_x'], cmd['res_y']) and 'increase' in cmd: 
                 try:
                     res_id = camera.RESOLUTIONS.index(camera._res)
-                    if resp_res == '+' and res_id < len(camera.RESOLUTIONS)-1:
-                        res_id += 1    
+                    if cmd['increase'] and res_id < len(camera.RESOLUTIONS)-1:
+                        res_id += 1
                         recalibrate=True
-                    elif resp_res == '-' and res_id > 0:
+                    elif not cmd['increase'] and res_id > 0:
                         res_id -= 1
                         recalibrate=True
                 except ValueError:
                     res_id = 0
 
                 self._target_res = camera.RESOLUTIONS[res_id]
-            else:
-                self._target_res = tuple(map(int, resp['set_target_resolution'].split('x')))
-                recalibrate=True
+        if 'set_target_resolution' in resp:
+            self._target_res = tuple(map(int, resp['set_target_resolution'].split('x')))
+            recalibrate=True
             # send another precal result
             self._run_id=None
         if 'set_target_fps' in resp:
@@ -231,6 +249,7 @@ class Device(threading.Thread):
     def run(self):
 
         self._camera_id = np.random.randint(self.N_CAMERAS)
+        camera = self._cameras[self._camera_id]
         xbn = 1
 
         while not self._terminate.is_set():
@@ -240,21 +259,25 @@ class Device(threading.Thread):
 
             dc = pb.DataChunk()
 
-            if not hasattr(self, '_run_id') or not self._run_id:
-            # make a run config and precalibration result
+            # create and send run config
+            if not hasattr(self, '_run_id'):
                 rc = self._make_run_config()
                 dc.run_configs.extend([rc])
-                pc = self._make_precal_result()
-                dc.precalibration_results.extend([pc])
-                print("Sending run config and precal result")
-            else:
-            # make an xb for this period with the expected number of events
-                with EVT_LOCK:
-                    xb = self._make_xb(sleep_time)
-                xb.xbn = xbn
-                xbn += 1
-                dc.exposure_blocks.extend([xb])
+                camera.stream(0)
 
+            # send precal if necessary after initializing camera
+            if camera._send_precal:
+                pc = self._make_precal_result(camera)
+                dc.precalibration_results.extend([pc])
+                camera._send_precal = False
+
+            # make an xb for this period with the expected number of events
+            with EVT_LOCK:
+                xb = self._make_xb(camera, sleep_time)
+            xb.xbn = xbn
+            xbn += 1
+            dc.exposure_blocks.extend([xb])  
+                
             conn = http.client.HTTPConnection(self._server)
             headers = self._make_header()
             body = dc.SerializeToString()
@@ -281,7 +304,7 @@ class Device(threading.Thread):
             sys.stdout.flush()
 
             # okay, we've sent the event. now sleep to simulate the interval
-            self._terminate.wait(sleep_time)
+            self._terminate.wait(sleep_time/250)
 
     def join(self):
         self._terminate.set()
@@ -323,7 +346,7 @@ if __name__ == "__main__":
         # PROTIP: stack trace from other threads doesn't appear
         # on docker logs, but debugging can be done by changing
         # 'start' to 'run'
-        dev.start()
+        dev.run()
         if not args.nowait:
             wait_time = np.random.exponential(args.interval/args.ndev)
             wait_time = min(wait_time, args.interval)
