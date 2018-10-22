@@ -1,44 +1,21 @@
 crayfis-emulator
 ================
-The emulator plays back real data from a few different phone runs, with configurable rates.
+The emulator plays back either real data from a live runs or simulated data given with randomized hotcells, lens-shade maps, etc.
 
-installation
+Installation
 ------------
-To get the playback data:
+The emulator is intended to run inside the crayfis-docker environment.  After crayfis-docker has been installed, the emulator can be built with:
 ```
-cd data/
-./fetch.sh
+cd crayfis-docker
+git clone https://github.com/crayfis/crayfis-emulator.git
+./rebuild.sh -e
 ```
-You will need permissions on the crayfis.ps.uci.edu server (pubkey); contact an admin.
 
-use
+Use
 ---
-see `./device.py --help`.
+The docker container basically runs `sleep $SLEEP_TIME && ./device.py [OPTIONS]`.  When run in the docker-compose environment, the options are taken from `docker-compose.yml` in the crayfis-docker repository and should be edited there.  Of particular interest is the `$SOURCE` option, which determines whether the emulator will stream live data or simulate data from a noise/hotcell distribution (default).  To change this behavior, `$SOURCE` can be set to a directory in the docker container with source files to stream; by default, `./data` will have such a selection.
 
-The interesting options are mostly `--interval`, which controls how often submit requests will be made (per device), `--rate` which essentially controls the size of the data uploaded, and `-N` which can be used to emulate up to several hundred devices (in my experience).
-It uses threading (which has performance problems in python) so if you've got multiple cores you can probably do better by running multiple instances of the device.py program with -N set to a few hundred on each.
-
-When simulating a single device, you can also use the `--nowait` command to commence sending data immediately.
-By default each simulated device waits a random amount of time before sending, to prevent all devices from
-trying to send data at the same time.
-
-Docker usage
----
-The docker container basically runs `sleep $SLEEP_TIME && ./device.py --server $SERVER -N $NUM_DEVICES --interval $INTERVAL`.
-The default values are:  
-```
-SLEEP_TIME=30
-SERVER=crayfis-site
-NUM_DEVICES=10
-INTERVAL=30
-```
-
-To set these to another value, simply pass the desired environment variables to the docker run command, e.g.:
-```
-docker run -e SERVER=127.0.0.1 crayfis-emulator
-```
-
-errors
+Errors
 ---
 Sometimes you will want to debug errors that occur on the server side during data submission.
 In the event of a non-2XX response code, the HTTP response will be dumped to `err.html`.
