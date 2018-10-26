@@ -81,7 +81,8 @@ class Camera:
             resized = cv2.resize(uncompressed, self._res, interpolation=cv2.INTER_CUBIC)
             self._weights = resized/255
             self._hotcell_mask = set(resp_body['mask'])
-            self._precal_id = uuid.UUID(hex=resp_body['precal_id'])
+            self._hot_hash = resp_body['hot_hash']
+            self._wgt_hash = resp_body['wgt_hash']
             self._is_calibrated = False
 
         elif resp.status != 204:
