@@ -16,6 +16,7 @@ import json
 import uuid
 import http.client
 import threading
+import hashlib
 
 EVT_LOCK = threading.Lock()
 
@@ -99,9 +100,7 @@ class Device(threading.Thread):
         pc = pb.PreCalibrationResult()
         pc.run_id = self._run_id.int % 2**64
         pc.run_id_hi = self._run_id.int // 2**64
-        camera._precal_id = uuid.uuid4()
-        pc.precal_id = camera._precal_id.int % 2**64
-        pc.precal_id_hi = camera._precal_id.int // 2**64
+        
         pc.start_time = int(time.time() * 1000)
         pc.battery_temp = int(self._temp)
 
@@ -124,6 +123,15 @@ class Device(threading.Thread):
         pc.compressed_weights = bytes(encoded)
         pc.compressed_format = fmt
 
+        m = hashlib.sha256()
+        m.update(np.sort(list(camera._hotcell_mask)))
+        pc.hot_hash = camera._hot_hash = int.from_bytes(m.digest(), byteorder='big') & 0x7FFFFFFF
+        
+        m = hashlib.sha256()
+        m.update(encoded)
+        pc.wgt_hash = camera._wgt_hash = int.from_bytes(m.digest(), byteorder='big') & 0x7FFFFFFF
+
+
         pc.end_time = int(time.time() * 1000)
         return pc
 
@@ -134,8 +142,8 @@ class Device(threading.Thread):
         xb.events.extend(camera.stream(interval))
         xb.run_id = self._run_id.int % 2**64
         xb.run_id_hi = self._run_id.int // 2**64
-        xb.precal_id = camera._precal_id.int % 2**64
-        xb.precal_id_hi = camera._precal_id.int // 2**64
+        xb.hot_hash = camera._hot_hash
+        xb.wgt_hash = camera._wgt_hash
 
         xb.start_time_nano = int(time.time()*1e9)
         xb.end_time_nano = int(time.time()*1e9 + interval*1e9)
@@ -194,7 +202,7 @@ class Device(threading.Thread):
                 uncompressed = cv2.imdecode(compressed, 0).transpose()
                 resized = cv2.resize(uncompressed, camera._res, interpolation=cv2.INTER_CUBIC)
                 camera._weights = resized/255
-                camera._precal_id = uuid.UUID(hex=cmd['precal_id'])
+                camera._wgt_hash = cmd['wgt_hash']
                 recalibrate=True
         if 'set_hotcells' in resp:
             cmd = resp['set_hotcells']
@@ -202,12 +210,13 @@ class Device(threading.Thread):
                 camera_id = cmd['camera_id']
                 hotcells = set(cmd['hotcells'])
                 camera._hotcell_mask.update(hotcells)
-                camera._precal_id = uuid.UUID(hex=cmd['precal_id'])
+                camera._hot_hash = cmd['hot_hash']
                 recalibrate=True
         if 'update_precal' in resp:
             cmd = resp['update_precal']
             camera = self._cameras[self._camera_id]
-            if camera._precal_id.hex != cmd['precal_id'] \
+            if ('wgt_hash' in cmd and camera._wgt_hash != cmd['wgt_hash'] \
+                    or 'hot_hash' in cmd and camera._hot_hash != cmd['hot_hash']) \
                     and self._camera_id == cmd['camera_id'] \
                     and camera._res == (cmd['res_x'], cmd['res_y']): 
                 camera.get_precal_from_server()
@@ -304,7 +313,7 @@ class Device(threading.Thread):
             sys.stdout.flush()
 
             # okay, we've sent the event. now sleep to simulate the interval
-            self._terminate.wait(sleep_time/250)
+            self._terminate.wait(sleep_time)
 
     def join(self):
         self._terminate.set()
@@ -346,7 +355,7 @@ if __name__ == "__main__":
         # PROTIP: stack trace from other threads doesn't appear
         # on docker logs, but debugging can be done by changing
         # 'start' to 'run'
-        dev.run()
+        dev.start()
         if not args.nowait:
             wait_time = np.random.exponential(args.interval/args.ndev)
             wait_time = min(wait_time, args.interval)
